@@ -1,7 +1,5 @@
 using System.Buffers.Binary;
 using System.Diagnostics;
-using System.Drawing.Drawing2D;
-using System.Drawing.Imaging;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -22,8 +20,6 @@ internal static class Program
 public sealed class SenderForm : Form
 {
     private const int FileChunkSize = 64 * 1024;
-    private const int ScreenMaxWidth = 1280;
-    private const long ScreenJpegQuality = 65L;
 
     private readonly TextBox _portBox = new();
     private readonly TextBox _messageBox = new();
@@ -39,8 +35,6 @@ public sealed class SenderForm : Form
     private readonly Button _sendFileAllButton = new();
     private readonly Button _sendFileSelectedButton = new();
     private readonly Button _cancelTransferButton = new();
-    private readonly Button _sendScreenAllButton = new();
-    private readonly Button _sendScreenSelectedButton = new();
 
     private readonly ProgressBar _progressBar = new();
     private readonly Label _progressLabel = new();
@@ -81,8 +75,6 @@ public sealed class SenderForm : Form
         _sendFileAllButton.Click += async (_, _) => await SendFilesToAllAsync();
         _sendFileSelectedButton.Click += async (_, _) => await SendFilesToSelectedAsync();
         _cancelTransferButton.Click += (_, _) => CancelTransfer();
-        _sendScreenAllButton.Click += async (_, _) => await SendScreenshotToAllAsync();
-        _sendScreenSelectedButton.Click += async (_, _) => await SendScreenshotToSelectedAsync();
 
         FormClosing += (_, _) => StopServer();
     }
@@ -183,7 +175,7 @@ public sealed class SenderForm : Form
 
         var fileGroup = new GroupBox
         {
-            Text = "ファイル・フォルダ・画面送信",
+            Text = "ファイル・フォルダ送信",
             Dock = DockStyle.Fill,
         };
 
@@ -246,16 +238,6 @@ public sealed class SenderForm : Form
         _cancelTransferButton.Width = 120;
         _cancelTransferButton.Enabled = false;
         fileSendPanel.Controls.Add(_cancelTransferButton);
-
-        _sendScreenAllButton.Text = "画面1枚を全員へ";
-        _sendScreenAllButton.Width = 150;
-        _sendScreenAllButton.Enabled = false;
-        fileSendPanel.Controls.Add(_sendScreenAllButton);
-
-        _sendScreenSelectedButton.Text = "画面1枚を選択先へ";
-        _sendScreenSelectedButton.Width = 170;
-        _sendScreenSelectedButton.Enabled = false;
-        fileSendPanel.Controls.Add(_sendScreenSelectedButton);
 
         fileLayout.Controls.Add(fileSendPanel, 0, 2);
 
@@ -878,163 +860,6 @@ public sealed class SenderForm : Form
         }
     }
 
-    private async Task SendScreenshotToAllAsync()
-    {
-        List<ClientConnection> snapshot;
-
-        lock (_clients)
-        {
-            snapshot = _clients.ToList();
-        }
-
-        await SendScreenshotToTargetsAsync(snapshot);
-    }
-
-    private async Task SendScreenshotToSelectedAsync()
-    {
-        if (_clientList.SelectedItem is not ClientConnection connection)
-        {
-            AddLog("送信先クライアントを選択してください。");
-            return;
-        }
-
-        await SendScreenshotToTargetsAsync(new List<ClientConnection> { connection });
-    }
-
-    private async Task SendScreenshotToTargetsAsync(List<ClientConnection> targets)
-    {
-        if (_isSendingFile)
-        {
-            AddLog("ファイル送信中は画面送信できません。");
-            return;
-        }
-
-        if (targets.Count == 0)
-        {
-            AddLog("接続中のクライアントがありません。");
-            return;
-        }
-
-        ScreenFrameInfo frameInfo;
-
-        try
-        {
-            frameInfo = CapturePrimaryScreenAsFrame();
-        }
-        catch (Exception ex)
-        {
-            AddLog($"画面キャプチャ失敗: {ex.Message}");
-            return;
-        }
-
-        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(frameInfo);
-        int successCount = 0;
-
-        foreach (var connection in targets)
-        {
-            bool ok = await SendScreenFrameToClientAsync(connection, payload);
-
-            if (ok)
-            {
-                successCount++;
-            }
-        }
-
-        AddLog($"画面1枚送信完了: {successCount}/{targets.Count} 台 / {frameInfo.Width}x{frameInfo.Height} / {FormatBytes(payload.Length)}");
-    }
-
-    private async Task<bool> SendScreenFrameToClientAsync(ClientConnection connection, byte[] payload)
-    {
-        try
-        {
-            await connection.WriteLock.WaitAsync();
-
-            try
-            {
-                NetworkStream stream = connection.Client.GetStream();
-                await NetPacket.WriteAsync(stream, PacketType.ScreenFrame, payload, CancellationToken.None);
-            }
-            finally
-            {
-                connection.WriteLock.Release();
-            }
-
-            return true;
-        }
-        catch (Exception ex)
-        {
-            AddLog($"画面送信失敗: {connection.DisplayName} / {ex.Message}");
-            RemoveClient(connection);
-            return false;
-        }
-    }
-
-    private static ScreenFrameInfo CapturePrimaryScreenAsFrame()
-    {
-        Screen? screen = Screen.PrimaryScreen;
-
-        if (screen is null)
-        {
-            throw new InvalidOperationException("プライマリ画面を取得できません。");
-        }
-
-        Rectangle bounds = screen.Bounds;
-
-        using var original = new Bitmap(bounds.Width, bounds.Height);
-
-        using (Graphics graphics = Graphics.FromImage(original))
-        {
-            graphics.CopyFromScreen(bounds.Left, bounds.Top, 0, 0, bounds.Size);
-        }
-
-        using Bitmap resized = ResizeBitmap(original, ScreenMaxWidth);
-        using var memory = new MemoryStream();
-
-        ImageCodecInfo jpegCodec = GetJpegCodec();
-
-        using var encoderParameters = new EncoderParameters(1);
-        encoderParameters.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, ScreenJpegQuality);
-
-        resized.Save(memory, jpegCodec, encoderParameters);
-
-        return new ScreenFrameInfo
-        {
-            ImageFormat = "jpeg",
-            Width = resized.Width,
-            Height = resized.Height,
-            CapturedAt = DateTimeOffset.Now,
-            ImageBytes = memory.ToArray(),
-        };
-    }
-
-    private static Bitmap ResizeBitmap(Bitmap source, int maxWidth)
-    {
-        if (source.Width <= maxWidth)
-        {
-            return new Bitmap(source);
-        }
-
-        int width = maxWidth;
-        int height = Math.Max(1, (int)Math.Round(source.Height * (maxWidth / (double)source.Width)));
-
-        var resized = new Bitmap(width, height);
-
-        using Graphics graphics = Graphics.FromImage(resized);
-        graphics.CompositingQuality = CompositingQuality.HighQuality;
-        graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
-        graphics.SmoothingMode = SmoothingMode.HighQuality;
-        graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
-        graphics.DrawImage(source, 0, 0, width, height);
-
-        return resized;
-    }
-
-    private static ImageCodecInfo GetJpegCodec()
-    {
-        return ImageCodecInfo.GetImageEncoders()
-            .First(codec => codec.MimeType.Equals("image/jpeg", StringComparison.OrdinalIgnoreCase));
-    }
-
     private void CancelTransfer()
     {
         if (!_isSendingFile || _transferCts is null)
@@ -1112,8 +937,6 @@ public sealed class SenderForm : Form
         _sendSelectedButton.Enabled = actual;
         _sendFileAllButton.Enabled = actual;
         _sendFileSelectedButton.Enabled = actual;
-        _sendScreenAllButton.Enabled = actual;
-        _sendScreenSelectedButton.Enabled = actual;
 
         _addFilesButton.Enabled = !_isSendingFile;
         _addFolderButton.Enabled = !_isSendingFile;
@@ -1303,19 +1126,6 @@ public sealed class FileStartInfo
     public string FileName { get; set; } = "";
 
     public long FileSize { get; set; }
-}
-
-public sealed class ScreenFrameInfo
-{
-    public string ImageFormat { get; set; } = "jpeg";
-
-    public int Width { get; set; }
-
-    public int Height { get; set; }
-
-    public DateTimeOffset CapturedAt { get; set; }
-
-    public byte[] ImageBytes { get; set; } = Array.Empty<byte>();
 }
 
 public sealed class TransferCancelInfo

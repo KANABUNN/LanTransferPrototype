@@ -36,8 +36,6 @@ public sealed class ReceiverForm : Form
 
     private readonly ListBox _messageList = new();
     private readonly ListBox _logList = new();
-    private readonly PictureBox _screenPictureBox = new();
-    private readonly Label _screenInfoLabel = new();
 
     private TcpClient? _client;
     private CancellationTokenSource? _cts;
@@ -81,7 +79,7 @@ public sealed class ReceiverForm : Form
         var root = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            RowCount = 7,
+            RowCount = 6,
             ColumnCount = 1,
             Padding = new Padding(12),
         };
@@ -89,7 +87,6 @@ public sealed class ReceiverForm : Form
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 62));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 38));
@@ -211,7 +208,7 @@ public sealed class ReceiverForm : Form
         _progressBar.Maximum = 1000;
         progressPanel.Controls.Add(_progressBar, 0, 1);
 
-        root.Controls.Add(progressPanel, 0, 4);
+        root.Controls.Add(progressPanel, 0, 3);
 
         var messageGroup = new GroupBox
         {
@@ -219,44 +216,10 @@ public sealed class ReceiverForm : Form
             Dock = DockStyle.Fill,
         };
 
-        var receiveTabs = new TabControl
-        {
-            Dock = DockStyle.Fill,
-        };
-
-        var messagePage = new TabPage("メッセージ・ファイル");
         _messageList.Dock = DockStyle.Fill;
-        messagePage.Controls.Add(_messageList);
+        messageGroup.Controls.Add(_messageList);
 
-        var screenPage = new TabPage("画面プレビュー");
-        var screenLayout = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            RowCount = 2,
-            ColumnCount = 1,
-        };
-
-        screenLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        screenLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-
-        _screenPictureBox.Dock = DockStyle.Fill;
-        _screenPictureBox.SizeMode = PictureBoxSizeMode.Zoom;
-        _screenPictureBox.BackColor = Color.Black;
-        screenLayout.Controls.Add(_screenPictureBox, 0, 0);
-
-        _screenInfoLabel.Text = "未受信";
-        _screenInfoLabel.Dock = DockStyle.Fill;
-        _screenInfoLabel.TextAlign = ContentAlignment.MiddleLeft;
-        screenLayout.Controls.Add(_screenInfoLabel, 0, 1);
-
-        screenPage.Controls.Add(screenLayout);
-
-        receiveTabs.TabPages.Add(messagePage);
-        receiveTabs.TabPages.Add(screenPage);
-
-        messageGroup.Controls.Add(receiveTabs);
-
-        root.Controls.Add(messageGroup, 0, 5);
+        root.Controls.Add(messageGroup, 0, 4);
 
         var logGroup = new GroupBox
         {
@@ -267,7 +230,7 @@ public sealed class ReceiverForm : Form
         _logList.Dock = DockStyle.Fill;
         logGroup.Controls.Add(_logList);
 
-        root.Controls.Add(logGroup, 0, 6);
+        root.Controls.Add(logGroup, 0, 5);
 
         Controls.Add(root);
     }
@@ -409,12 +372,6 @@ public sealed class ReceiverForm : Form
             case PacketType.FileEnd:
                 {
                     FinishFileReceive();
-                    break;
-                }
-
-            case PacketType.ScreenFrame:
-                {
-                    DisplayScreenFrame(packet.Payload);
                     break;
                 }
 
@@ -655,65 +612,6 @@ public sealed class ReceiverForm : Form
         UpdateProgress(0, 1, "受信キャンセル");
         AddLog($"受信キャンセル: {reason}");
         AddMessage($"受信キャンセル: {reason}");
-    }
-
-    private void DisplayScreenFrame(byte[] payload)
-    {
-        ScreenFrameInfo? info;
-
-        try
-        {
-            info = JsonSerializer.Deserialize<ScreenFrameInfo>(payload);
-        }
-        catch (Exception ex)
-        {
-            AddLog($"画面フレームの解析に失敗しました: {ex.Message}");
-            return;
-        }
-
-        if (info is null || info.ImageBytes.Length == 0)
-        {
-            AddLog("画面フレーム情報が不正です。");
-            return;
-        }
-
-        Image displayImage;
-
-        try
-        {
-            using var memory = new MemoryStream(info.ImageBytes);
-            using Image loaded = Image.FromStream(memory);
-            displayImage = new Bitmap(loaded);
-        }
-        catch (Exception ex)
-        {
-            AddLog($"画面画像の読み込みに失敗しました: {ex.Message}");
-            return;
-        }
-
-        ShowScreenFrame(displayImage, info);
-    }
-
-    private void ShowScreenFrame(Image image, ScreenFrameInfo info)
-    {
-        if (IsDisposed)
-        {
-            image.Dispose();
-            return;
-        }
-
-        if (InvokeRequired)
-        {
-            BeginInvoke(new Action(() => ShowScreenFrame(image, info)));
-            return;
-        }
-
-        Image? oldImage = _screenPictureBox.Image;
-        _screenPictureBox.Image = image;
-        oldImage?.Dispose();
-
-        _screenInfoLabel.Text = $"{info.Width}x{info.Height} / {info.ImageFormat} / {FormatBytes(info.ImageBytes.Length)} / {info.CapturedAt:HH:mm:ss}";
-        AddMessage($"画面プレビュー受信: {info.Width}x{info.Height}");
     }
 
     private void CloseCurrentFileSession(bool deleteTempFile)
@@ -1067,19 +965,6 @@ public sealed class FileStartInfo
     public string FileName { get; set; } = "";
 
     public long FileSize { get; set; }
-}
-
-public sealed class ScreenFrameInfo
-{
-    public string ImageFormat { get; set; } = "jpeg";
-
-    public int Width { get; set; }
-
-    public int Height { get; set; }
-
-    public DateTimeOffset CapturedAt { get; set; }
-
-    public byte[] ImageBytes { get; set; } = Array.Empty<byte>();
 }
 
 public sealed class TransferCancelInfo
