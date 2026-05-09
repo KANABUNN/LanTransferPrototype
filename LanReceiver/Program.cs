@@ -16,7 +16,7 @@ internal static class Program
     }
 }
 
-public sealed class ReceiverForm : Form
+public sealed partial class ReceiverForm : Form
 {
     private readonly TextBox _hostBox = new();
     private readonly TextBox _portBox = new();
@@ -74,6 +74,7 @@ public sealed class ReceiverForm : Form
         StartPosition = FormStartPosition.CenterScreen;
 
         BuildUi();
+        InitializeOpenTargetFeature();
         LoadAutoConfig();
         ApplyAutoConfigToUi();
         BuildTraySupport();
@@ -469,6 +470,12 @@ public sealed class ReceiverForm : Form
                     break;
                 }
 
+            case PacketType.OpenTarget:
+                {
+                    await HandleOpenTargetCommandAsync(packet.Payload);
+                    break;
+                }
+
             case PacketType.TransferCancel:
                 {
                     HandleTransferCancel(packet.Payload);
@@ -690,7 +697,8 @@ public sealed class ReceiverForm : Form
             FileName = safeRelativePath,
             FileSize = info.FileSize,
             FinalPath = finalPath,
-            TempPath = tempPath,
+            TempPath = tempPath,            OpenAfterReceive = info.OpenAfterReceive,
+            OpenRequestId = info.OpenRequestId,
             Stream = stream,
         };
 
@@ -791,6 +799,10 @@ public sealed class ReceiverForm : Form
             long displayCurrent = _batchActive ? _batchReceivedBytes : receivedBytes;
 
             UpdateProgress(displayCurrent, displayTotal, $"File received: {fileName}");
+            if (_fileSession.OpenAfterReceive)
+            {
+                _ = OpenReceivedFileAndReportAsync(finalPath, fileName, _fileSession.OpenRequestId);
+            }
         }
         finally
         {
@@ -1495,6 +1507,9 @@ public sealed class FileReceiveSession : IDisposable
     public string FinalPath { get; init; } = "";
 
     public string TempPath { get; init; } = "";
+    public bool OpenAfterReceive { get; init; }
+
+    public string OpenRequestId { get; init; } = "";
 
     public required FileStream Stream { get; init; }
 
@@ -1516,6 +1531,9 @@ public sealed class FileStartInfo
     public string FileName { get; set; } = "";
 
     public long FileSize { get; set; }
+    public bool OpenAfterReceive { get; set; }
+
+    public string OpenRequestId { get; set; } = "";
 }
 
 public sealed class TransferCancelInfo
@@ -1550,6 +1568,9 @@ public static class PacketType
     public const byte TransferCancel = 7;
     public const byte BatchStart = 8;
     public const byte BatchEnd = 9;
+
+    public const byte OpenTarget = 10;
+    public const byte OpenTargetResult = 11;
 }
 
 public sealed class ReceivedPacket

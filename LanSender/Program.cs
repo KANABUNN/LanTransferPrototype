@@ -1,4 +1,4 @@
-﻿using System.Buffers.Binary;
+using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Drawing.Imaging;
 using System.Net;
@@ -18,7 +18,7 @@ internal static class Program
     }
 }
 
-public sealed class SenderForm : Form
+public sealed partial class SenderForm : Form
 {
     private const int FileChunkSize = 64 * 1024;
 
@@ -74,6 +74,7 @@ public sealed class SenderForm : Form
         StartPosition = FormStartPosition.CenterScreen;
 
         BuildUi();
+        InitializeOpenTargetFeature();
 
         _startButton.Click += (_, _) => StartServer();
         _stopButton.Click += (_, _) => StopServer();
@@ -475,46 +476,7 @@ public sealed class SenderForm : Form
 
     private async Task MonitorClientAsync(ClientConnection connection, CancellationToken token)
     {
-        try
-        {
-            NetworkStream stream = connection.Client.GetStream();
-            byte[] buffer = new byte[1];
-
-            while (!token.IsCancellationRequested)
-            {
-                int read = await stream.ReadAsync(buffer.AsMemory(0, 1), token);
-
-                if (read == 0)
-                {
-                    AddLog($"Client disconnected: {connection.DisplayName}");
-                    break;
-                }
-
-                AddLog($"Unexpected inbound data was ignored: {connection.DisplayName}");
-            }
-        }
-        catch (OperationCanceledException)
-        {
-        }
-        catch (ObjectDisposedException)
-        {
-        }
-        catch (IOException)
-        {
-            AddLog($"Client communication ended: {connection.DisplayName}");
-        }
-        catch (SocketException)
-        {
-            AddLog($"Client communication ended: {connection.DisplayName}");
-        }
-        catch (Exception ex)
-        {
-            AddLog($"Client monitor error: {connection.DisplayName} / {ex.Message}");
-        }
-        finally
-        {
-            RemoveClient(connection);
-        }
+        await MonitorClientPacketsAsync(connection, token);
     }
 
     private async Task SendMessageToAllAsync()
@@ -1630,6 +1592,9 @@ public static class PacketType
     public const byte TransferCancel = 7;
     public const byte BatchStart = 8;
     public const byte BatchEnd = 9;
+
+    public const byte OpenTarget = 10;
+    public const byte OpenTargetResult = 11;
 }
 
 public static class NetPacket
