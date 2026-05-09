@@ -864,8 +864,7 @@ public sealed partial class SenderForm : Form
 
         CancellationToken token = _screenStreamCts.Token;
         var streamer = new ScreenVideoStreamer(new ScreenCaptureService());
-        streamer.StatsChanged += stats => UpdateScreenStatus(
-            $"動画配信中: target {stats.TargetFps}fps / actual {stats.Fps:0.0}fps / scale {stats.ScalePercent}% / source {stats.CaptureSource} / cap {stats.CaptureMs:0.0}ms (copy {stats.CopyMs:0.0} / enc {stats.EncodeMs:0.0}) / send {stats.SendMs:0.0}ms / loop {stats.LoopMs:0.0}ms / {FormatBytes(stats.LastFrameBytes)} / {stats.Mbps:0.0} Mbps");
+        streamer.StatsChanged += stats => UpdateScreenStatus($"動画配信中: target {stats.TargetFps}fps / actual {stats.Fps:0.0}fps / avg {stats.AverageFps:0.0}fps / scale {stats.ScalePercent}% / source {stats.CaptureSource} / cap {stats.CaptureMs:0.0}ms (copy {stats.CopyMs:0.0} enc {stats.EncodeMs:0.0}) / send {stats.SendMs:0.0}ms / loop {stats.LoopMs:0.0}ms / margin {stats.RemainingBudgetMs:0.0}ms / late {stats.DroppedScheduleFrames} / timer {(stats.HighResolutionTimerEnabled ? "1ms" : "default")} / {FormatBytes(stats.LastFrameBytes)} / {stats.Mbps:0.0} Mbps");
 
         _ = Task.Run(async () =>
         {

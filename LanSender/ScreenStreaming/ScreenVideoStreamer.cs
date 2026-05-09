@@ -1,4 +1,5 @@
 ﻿using System.Diagnostics;
+using System.Runtime.InteropServices;
 
 namespace LanSender.ScreenStreaming;
 
@@ -18,6 +19,8 @@ public sealed class ScreenVideoStreamer
         Func<ScreenFrame, CancellationToken, Task<int>> sendFrameAsync,
         CancellationToken token)
     {
+        using HighResolutionTimerScope timerScope = HighResolutionTimerScope.TryStart();
+
         string streamId = string.IsNullOrWhiteSpace(options.StreamId)
             ? Guid.NewGuid().ToString("N")
             : options.StreamId;
@@ -30,74 +33,87 @@ public sealed class ScreenVideoStreamer
             : options.CaptureSource;
 
         double frameIntervalTicks = Stopwatch.Frequency / (double)targetFps;
-        double nextFrameTicks = Stopwatch.GetTimestamp();
+        double frameBudgetMs = 1000.0 / targetFps;
+
+        long streamStartTicks = Stopwatch.GetTimestamp();
+        double nextFrameTicks = streamStartTicks;
 
         long frameNo = 0;
         long totalBytes = 0;
         long droppedScheduleFrames = 0;
 
-        var totalStopwatch = Stopwatch.StartNew();
-        var statsStopwatch = Stopwatch.StartNew();
+        long statsStartTicks = streamStartTicks;
+        long statsFrameStart = 0;
+        long statsBytesStart = 0;
 
         double lastCaptureMs = 0;
         double lastCopyMs = 0;
         double lastEncodeMs = 0;
         double lastSendMs = 0;
         double lastLoopMs = 0;
+        int lastSuccessClients = 0;
+        ScreenFrame? lastFrameForStats = null;
 
         while (!token.IsCancellationRequested)
         {
-            long loopStartTimestamp = Stopwatch.GetTimestamp();
-            long nowTicks = loopStartTimestamp;
+            await PreciseDelayUntilAsync(nextFrameTicks, token);
 
-            if (nowTicks < nextFrameTicks)
-            {
-                int delayMs = (int)Math.Max(1, (nextFrameTicks - nowTicks) * 1000.0 / Stopwatch.Frequency);
-                await Task.Delay(delayMs, token);
-                loopStartTimestamp = Stopwatch.GetTimestamp();
-            }
-            else
-            {
-                double lateFrames = (nowTicks - nextFrameTicks) / frameIntervalTicks;
-                if (lateFrames >= 1)
-                {
-                    droppedScheduleFrames += (long)lateFrames;
-                    nextFrameTicks = nowTicks;
-                }
-            }
+            long loopStartTicks = Stopwatch.GetTimestamp();
 
             ScreenFrame frame = _captureService.CaptureDesktopJpeg(streamId, ++frameNo, quality, scalePercent, captureSource);
+            lastFrameForStats = frame;
             lastCaptureMs = frame.CaptureMs;
             lastCopyMs = frame.CopyMs;
             lastEncodeMs = frame.EncodeMs;
 
-            var sendStopwatch = Stopwatch.StartNew();
+            long sendStartTicks = Stopwatch.GetTimestamp();
             int successClients = await sendFrameAsync(frame, token);
-            sendStopwatch.Stop();
-            lastSendMs = sendStopwatch.Elapsed.TotalMilliseconds;
+            long sendEndTicks = Stopwatch.GetTimestamp();
 
+            lastSuccessClients = successClients;
+            lastSendMs = TicksToMilliseconds(sendEndTicks - sendStartTicks);
             totalBytes += frame.ImageBytes.LongLength * Math.Max(successClients, 0);
 
-            long loopEndTimestamp = Stopwatch.GetTimestamp();
-            lastLoopMs = (loopEndTimestamp - loopStartTimestamp) * 1000.0 / Stopwatch.Frequency;
+            long loopEndTicks = Stopwatch.GetTimestamp();
+            lastLoopMs = TicksToMilliseconds(loopEndTicks - loopStartTicks);
 
             nextFrameTicks += frameIntervalTicks;
 
-            if (statsStopwatch.ElapsedMilliseconds >= 500)
+            if (loopEndTicks > nextFrameTicks)
             {
-                double elapsedSeconds = Math.Max(totalStopwatch.Elapsed.TotalSeconds, 0.001);
-                double actualFps = frameNo / elapsedSeconds;
-                double mbps = (totalBytes * 8.0) / elapsedSeconds / 1_000_000.0;
+                long missedFrames = (long)Math.Floor((loopEndTicks - nextFrameTicks) / frameIntervalTicks) + 1;
+                if (missedFrames > 0)
+                {
+                    droppedScheduleFrames += missedFrames;
+                    nextFrameTicks += missedFrames * frameIntervalTicks;
+                }
+            }
+
+            long nowTicks = Stopwatch.GetTimestamp();
+            double statsElapsedMs = TicksToMilliseconds(nowTicks - statsStartTicks);
+
+            if (statsElapsedMs >= 500 && lastFrameForStats is not null)
+            {
+                double statsElapsedSeconds = Math.Max(statsElapsedMs / 1000.0, 0.001);
+                double totalElapsedSeconds = Math.Max(TicksToMilliseconds(nowTicks - streamStartTicks) / 1000.0, 0.001);
+
+                long framesInWindow = frameNo - statsFrameStart;
+                long bytesInWindow = totalBytes - statsBytesStart;
+
+                double windowFps = framesInWindow / statsElapsedSeconds;
+                double averageFps = frameNo / totalElapsedSeconds;
+                double windowMbps = (bytesInWindow * 8.0) / statsElapsedSeconds / 1_000_000.0;
+                double remainingBudgetMs = frameBudgetMs - lastLoopMs;
 
                 StatsChanged?.Invoke(new ScreenStreamStats(
-                    frame.Info.StreamId,
-                    frame.Info.FrameNo,
-                    frame.Info.Width,
-                    frame.Info.Height,
-                    frame.ImageBytes.Length,
-                    successClients,
-                    actualFps,
-                    mbps,
+                    lastFrameForStats.Info.StreamId,
+                    lastFrameForStats.Info.FrameNo,
+                    lastFrameForStats.Info.Width,
+                    lastFrameForStats.Info.Height,
+                    lastFrameForStats.ImageBytes.Length,
+                    lastSuccessClients,
+                    windowFps,
+                    windowMbps,
                     targetFps,
                     scalePercent,
                     captureSource,
@@ -106,11 +122,102 @@ public sealed class ScreenVideoStreamer
                     lastEncodeMs,
                     lastSendMs,
                     lastLoopMs,
-                    droppedScheduleFrames));
+                    droppedScheduleFrames,
+                    averageFps,
+                    frameBudgetMs,
+                    remainingBudgetMs,
+                    timerScope.Enabled));
 
-                statsStopwatch.Restart();
+                statsStartTicks = nowTicks;
+                statsFrameStart = frameNo;
+                statsBytesStart = totalBytes;
             }
         }
+    }
+
+    private static async Task PreciseDelayUntilAsync(double targetTicks, CancellationToken token)
+    {
+        while (true)
+        {
+            token.ThrowIfCancellationRequested();
+
+            long nowTicks = Stopwatch.GetTimestamp();
+            double remainingMs = (targetTicks - nowTicks) * 1000.0 / Stopwatch.Frequency;
+
+            if (remainingMs <= 0)
+            {
+                return;
+            }
+
+            if (remainingMs > 4.0)
+            {
+                await Task.Delay(Math.Max(1, (int)(remainingMs - 2.0)), token);
+                continue;
+            }
+
+            if (remainingMs > 1.0)
+            {
+                await Task.Delay(1, token);
+                continue;
+            }
+
+            if (remainingMs > 0.20)
+            {
+                Thread.SpinWait(80);
+                continue;
+            }
+
+            return;
+        }
+    }
+
+    private static double TicksToMilliseconds(long ticks)
+    {
+        return ticks * 1000.0 / Stopwatch.Frequency;
+    }
+
+    private sealed class HighResolutionTimerScope : IDisposable
+    {
+        private HighResolutionTimerScope(bool enabled)
+        {
+            Enabled = enabled;
+        }
+
+        public bool Enabled { get; }
+
+        public static HighResolutionTimerScope TryStart()
+        {
+            try
+            {
+                return new HighResolutionTimerScope(timeBeginPeriod(1) == 0);
+            }
+            catch
+            {
+                return new HighResolutionTimerScope(false);
+            }
+        }
+
+        public void Dispose()
+        {
+            if (!Enabled)
+            {
+                return;
+            }
+
+            try
+            {
+                timeEndPeriod(1);
+            }
+            catch
+            {
+            }
+        }
+
+        [DllImport("winmm.dll")]
+        private static extern uint timeBeginPeriod(uint uMilliseconds);
+
+        [DllImport("winmm.dll")]
+        private static extern uint timeEndPeriod(uint uMilliseconds);
     }
 }
 
@@ -120,7 +227,7 @@ public sealed class ScreenVideoOptions
     public int Fps { get; init; } = 30;
     public int Quality { get; init; } = 70;
 
-    // 100 = original size. 60 is the practical default for 30fps MJPEG.
+    // 100 = original size. 60 is practical when copy/encode cost is high.
     public int ScalePercent { get; init; } = 60;
 
     // Primary is faster than Virtual when the sender has multiple displays.
@@ -150,4 +257,8 @@ public sealed record ScreenStreamStats(
     double EncodeMs,
     double SendMs,
     double LoopMs,
-    long DroppedScheduleFrames);
+    long DroppedScheduleFrames,
+    double AverageFps,
+    double FrameBudgetMs,
+    double RemainingBudgetMs,
+    bool HighResolutionTimerEnabled);
