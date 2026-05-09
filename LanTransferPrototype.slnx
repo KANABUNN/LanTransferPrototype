@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="LanReceiver/LanReceiver.csproj" />
+  <Project Path="LanSender/LanSender.csproj" />
+</Solution>
