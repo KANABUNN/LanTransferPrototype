@@ -2,40 +2,23 @@ namespace LanReceiver.Protocol;
 
 public static class PacketType
 {
-    public const byte TextMessage = 1;
-    public const byte FileStart = 2;
-    public const byte FileChunk = 3;
-    public const byte FileEnd = 4;
+    public const byte TextMessage = LanShared.Protocol.PacketType.TextMessage;
+    public const byte FileStart = LanShared.Protocol.PacketType.FileStart;
+    public const byte FileChunk = LanShared.Protocol.PacketType.FileChunk;
+    public const byte FileEnd = LanShared.Protocol.PacketType.FileEnd;
 
-    // 既存互換: 旧 ScreenFrame と新 ScreenVideoFrame は同じ番号を使う。
-    public const byte ScreenFrame = 5;
-    public const byte ScreenVideoFrame = 5;
+    public const byte ScreenFrame = LanShared.Protocol.PacketType.ScreenFrame;
+    public const byte ScreenVideoFrame = LanShared.Protocol.PacketType.ScreenVideoFrame;
 
-    public const byte OpenTarget = 6;
-    public const byte OpenTargetResult = 13;
-    public const byte TransferCancel = 7;
-    public const byte BatchStart = 8;
-    public const byte BatchEnd = 9;
+    public const byte OpenTarget = LanShared.Protocol.PacketType.OpenTarget;
+    public const byte TransferCancel = LanShared.Protocol.PacketType.TransferCancel;
+    public const byte BatchStart = LanShared.Protocol.PacketType.BatchStart;
+    public const byte BatchEnd = LanShared.Protocol.PacketType.BatchEnd;
 
-    public const byte ScreenVideoStart = 10;
-    public const byte ScreenVideoStop = 11;
-    public const byte KeepAlive = 12;
+    public const byte ScreenVideoStart = LanShared.Protocol.PacketType.ScreenVideoStart;
+    public const byte ScreenVideoStop = LanShared.Protocol.PacketType.ScreenVideoStop;
+    public const byte KeepAlive = LanShared.Protocol.PacketType.KeepAlive;
+    public const byte OpenTargetResult = LanShared.Protocol.PacketType.OpenTargetResult;
 
-    public static string ToName(byte type) => type switch
-    {
-        TextMessage => nameof(TextMessage),
-        FileStart => nameof(FileStart),
-        FileChunk => nameof(FileChunk),
-        FileEnd => nameof(FileEnd),
-        ScreenVideoFrame => nameof(ScreenVideoFrame),
-        OpenTarget => nameof(OpenTarget),
-        OpenTargetResult => nameof(OpenTargetResult),
-        TransferCancel => nameof(TransferCancel),
-        BatchStart => nameof(BatchStart),
-        BatchEnd => nameof(BatchEnd),
-        ScreenVideoStart => nameof(ScreenVideoStart),
-        ScreenVideoStop => nameof(ScreenVideoStop),
-        KeepAlive => nameof(KeepAlive),
-        _ => $"Unknown({type})",
-    };
+    public static string ToName(byte type) => LanShared.Protocol.PacketType.ToName(type);
 }
