@@ -970,91 +970,93 @@ public sealed partial class SenderForm : Form
         await SendScreenFrameToTargetsAsync(new List<ClientConnection> { connection }, CancellationToken.None, logResult: true);
     }
 
-    private async Task StartScreenStreamAsync(bool selectedOnly)
+    private ScreenCaptureData CaptureVirtualScreenJpeg(long quality)
     {
-        if (_isStreamingScreen)
+        Rectangle bounds = SystemInformation.VirtualScreen;
+
+        if (bounds.Width <= 0 || bounds.Height <= 0)
         {
-            AddLog("Screen monitor is already running.");
-            return;
+            throw new InvalidOperationException("Virtual screen size is invalid.");
         }
 
-        if (_isSendingFile)
-        {
-            AddLog("Wait until file transfer is done.");
-            return;
-        }
+        using var bitmap = new Bitmap(bounds.Width, bounds.Height, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
 
-        List<ClientConnection> fixedTargets;
-
-        if (selectedOnly)
+        using (Graphics graphics = Graphics.FromImage(bitmap))
         {
-            if (_clientList.SelectedItem is not ClientConnection connection)
+            graphics.CopyFromScreen(
+                bounds.Left,
+                bounds.Top,
+                0,
+                0,
+                bounds.Size,
+                CopyPixelOperation.SourceCopy);
+
+            try
             {
-                AddLog("Select a client first.");
-                return;
-            }
+                Point cursorPosition = Cursor.Position;
+                var cursorBounds = new Rectangle(
+                    cursorPosition.X - bounds.Left,
+                    cursorPosition.Y - bounds.Top,
+                    Cursors.Default.Size.Width,
+                    Cursors.Default.Size.Height);
 
-            fixedTargets = new List<ClientConnection> { connection };
+                Cursors.Default.Draw(graphics, cursorBounds);
+            }
+            catch
+            {
+                // Cursor drawing is optional. Ignore failures.
+            }
+        }
+
+        using var memoryStream = new MemoryStream();
+
+        System.Drawing.Imaging.ImageCodecInfo? jpegCodec = System.Drawing.Imaging.ImageCodecInfo
+            .GetImageEncoders()
+            .FirstOrDefault(x => x.FormatID == System.Drawing.Imaging.ImageFormat.Jpeg.Guid);
+
+        if (jpegCodec is null)
+        {
+            bitmap.Save(memoryStream, System.Drawing.Imaging.ImageFormat.Jpeg);
         }
         else
         {
-            fixedTargets = new List<ClientConnection>();
+            using var encoderParameters = new System.Drawing.Imaging.EncoderParameters(1);
+            encoderParameters.Param[0] = new System.Drawing.Imaging.EncoderParameter(
+                System.Drawing.Imaging.Encoder.Quality,
+                Math.Clamp(quality, 20L, 95L));
+
+            bitmap.Save(memoryStream, jpegCodec, encoderParameters);
         }
 
-        if (!selectedOnly && GetClientSnapshot().Count == 0)
+        return new ScreenCaptureData
         {
-            AddLog("No connected clients.");
-            return;
-        }
-
-        _screenStreamCts = new CancellationTokenSource();
-        _isStreamingScreen = true;
-        SetSendButtonsEnabled(_serverCts is not null);
-        UpdateScreenStatus("Realtime monitor starting");
-
-        bool useFixedTargets = selectedOnly;
-        CancellationToken token = _screenStreamCts.Token;
-
-        _ = Task.Run(() => ScreenStreamLoopAsync(useFixedTargets, fixedTargets, token));
-
-        await Task.CompletedTask;
+            FrameNo = System.Threading.Interlocked.Increment(ref _screenFrameNo),
+            Width = bounds.Width,
+            Height = bounds.Height,
+            ImageBytes = memoryStream.ToArray(),
+        };
     }
 
-    private async Task ScreenStreamLoopAsync(bool useFixedTargets, List<ClientConnection> fixedTargets, CancellationToken token)
-    {
-        var stopwatch = Stopwatch.StartNew();
-        long capturedFrames = 0;
-        long sentFrames = 0;
-        long skippedFrames = 0;
-        long totalSentBytes = 0;
-        ulong lastHash = 0;
-        bool hasLastHash = false;
-        DateTime lastHeartbeatAt = DateTime.MinValue;
-
-        try
-        {
-            while (!token.IsCancellationRequested)
-            {
-                int intervalMs = GetScreenIntervalMs();
-                var loopStart = Stopwatch.StartNew();
-
-                List<ClientConnection> targets = useFixedTargets ? fixedTargets.ToList() : GetClientSnapshot();
-
-                if (targets.Count == 0)
+                else
                 {
-                    UpdateScreenStatus("Realtime monitor stopped: no clients");
-                    break;
+                    duplicateRun = 0;
+                    lastFrameHash = frameHash;
                 }
 
-                ScreenCaptureData capture = CaptureVirtualScreenJpeg(GetScreenQuality());
-                capturedFrames++;
+                int heartbeatFrames = Math.Max(1, 1000 / intervalMs);
+                bool shouldSend = !duplicate || duplicateRun >= heartbeatFrames;
 
-                ulong currentHash = ComputeFnv1a64(capture.ImageBytes);
-                bool changed = !hasLastHash || currentHash != lastHash;
-                bool heartbeat = (DateTime.UtcNow - lastHeartbeatAt).TotalMilliseconds >= 1000;
-
-                if (changed || heartbeat)
+                if (!shouldSend)
                 {
+                    skippedFrames++;
+                }
+                else
+                {
+                    if (duplicate)
+                    {
+                        duplicateRun = 0;
+                    }
+
                     int success = 0;
 
                     foreach (ClientConnection connection in targets)
@@ -1066,86 +1068,62 @@ public sealed partial class SenderForm : Form
                         if (ok)
                         {
                             success++;
-                            totalSentBytes += capture.ImageBytes.Length;
                         }
                     }
 
-                    if (changed)
+                    if (success > 0)
                     {
-                        lastHash = currentHash;
-                        hasLastHash = true;
+                        sentFrames++;
+                        sentBytes += (long)capture.ImageBytes.Length * success;
                     }
-
-                    if (heartbeat)
-                    {
-                        lastHeartbeatAt = DateTime.UtcNow;
-                    }
-
-                    sentFrames++;
-
-                    double seconds = Math.Max(stopwatch.Elapsed.TotalSeconds, 0.001);
-                    double fps = sentFrames / seconds;
-                    double mbps = (totalSentBytes * 8.0) / seconds / 1_000_000.0;
-
-                    UpdateScreenStatus(
-                        $"Realtime: frame {capture.FrameNo}, captured {capturedFrames}, sent {sentFrames}, skipped {skippedFrames}, {capture.Width}x{capture.Height}, {FormatBytes(capture.ImageBytes.Length)}, clients {success}/{targets.Count}, {fps:0.0} fps, {mbps:0.0} Mbps");
                 }
-                else
+
+                if (statusStopwatch.ElapsedMilliseconds >= 1000)
                 {
-                    skippedFrames++;
-
-                    double seconds = Math.Max(stopwatch.Elapsed.TotalSeconds, 0.001);
-                    double fps = sentFrames / seconds;
-                    double mbps = (totalSentBytes * 8.0) / seconds / 1_000_000.0;
+                    long deltaFrames = sentFrames - statusBaseSentFrames;
+                    long deltaBytes = sentBytes - statusBaseSentBytes;
+                    double seconds = Math.Max(statusStopwatch.Elapsed.TotalSeconds, 0.001);
+                    double fps = deltaFrames / seconds;
+                    double mbps = (deltaBytes * 8.0) / seconds / 1000.0 / 1000.0;
 
                     UpdateScreenStatus(
-                        $"Realtime: no change, captured {capturedFrames}, sent {sentFrames}, skipped {skippedFrames}, {fps:0.0} fps, {mbps:0.0} Mbps");
+                        $"Realtime: {fps:0.0} fps, {mbps:0.0} Mbps, frame {capture.FrameNo}, {capture.Width}x{capture.Height}, {FormatBytes(capture.ImageBytes.Length)}, clients {targets.Count}, skipped {skippedFrames}");
+
+                    statusBaseSentFrames = sentFrames;
+                    statusBaseSentBytes = sentBytes;
+                    statusStopwatch.Restart();
                 }
 
-                int delayMs = Math.Max(1, intervalMs - (int)loopStart.ElapsedMilliseconds);
+                double elapsedMs =
+                    (Stopwatch.GetTimestamp() - frameStartTimestamp) * 1000.0 / Stopwatch.Frequency;
+
+                int delayMs = Math.Max(1, intervalMs - (int)elapsedMs);
                 await Task.Delay(delayMs, token);
             }
         }
         catch (OperationCanceledException)
         {
-            UpdateScreenStatus("Realtime monitor stopped");
+            UpdateScreenStatus("Realtime screen stopped");
         }
         catch (Exception ex)
         {
-            AddLog($"Realtime monitor error: {ex.Message}");
-            UpdateScreenStatus("Realtime monitor error");
+            AddLog($"Realtime screen error: {ex.Message}");
+            UpdateScreenStatus("Realtime screen error");
         }
         finally
         {
-            stopwatch.Stop();
+            totalStopwatch.Stop();
 
             _isStreamingScreen = false;
-
-            try
-            {
-                _screenStreamCts?.Dispose();
-            }
-            catch
-            {
-            }
-
             _screenStreamCts = null;
 
             SetSendButtonsEnabled(_serverCts is not null);
 
-            if (!IsDisposed)
-            {
-                if (InvokeRequired)
-                {
-                    BeginInvoke(new Action(() => _stopScreenButton.Enabled = false));
-                }
-                else
-                {
-                    _stopScreenButton.Enabled = false;
-                }
-            }
+            double averageFps = sentFrames / Math.Max(totalStopwatch.Elapsed.TotalSeconds, 0.001);
+            AddLog($"Realtime screen finished: sent {sentFrames} frames, captured {capturedFrames}, skipped {skippedFrames}, avg {averageFps:0.0} fps");
         }
     }
+
 
     private void StopScreenStream()
     {
@@ -1155,7 +1133,7 @@ public sealed partial class SenderForm : Form
         }
 
         _screenStreamCts.Cancel();
-        AddLog("Realtime monitor stop requested.");
+        AddLog("Screen monitor stop requested.");
     }
 
     private async Task SendScreenFrameToTargetsAsync(List<ClientConnection> targets, CancellationToken token, bool logResult)
@@ -1236,26 +1214,6 @@ public sealed partial class SenderForm : Form
         using (Graphics graphics = Graphics.FromImage(bitmap))
         {
             graphics.CopyFromScreen(bounds.Left, bounds.Top, 0, 0, bounds.Size, CopyPixelOperation.SourceCopy);
-
-            Point cursorPosition = Cursor.Position;
-
-            if (bounds.Contains(cursorPosition))
-            {
-                try
-                {
-                    Cursors.Default.Draw(
-                        graphics,
-                        new Rectangle(
-                            cursorPosition.X - bounds.Left,
-                            cursorPosition.Y - bounds.Top,
-                            Cursors.Default.Size.Width,
-                            Cursors.Default.Size.Height));
-                }
-                catch
-                {
-                    // Cursor drawing is optional.
-                }
-            }
         }
 
         using var memoryStream = new MemoryStream();
@@ -1273,20 +1231,17 @@ public sealed partial class SenderForm : Form
 
     private static void SaveJpeg(Image image, Stream stream, int quality)
     {
-        ImageCodecInfo? encoder = ImageCodecInfo.GetImageEncoders()
-            .FirstOrDefault(x => x.FormatID == ImageFormat.Jpeg.Guid);
+        System.Drawing.Imaging.ImageCodecInfo? encoder = System.Drawing.Imaging.ImageCodecInfo.GetImageDecoders()
+            .FirstOrDefault(x => string.Equals(x.FormatID.ToString(), System.Drawing.Imaging.ImageFormat.Jpeg.Guid.ToString(), StringComparison.OrdinalIgnoreCase));
 
         if (encoder is null)
         {
-            image.Save(stream, ImageFormat.Jpeg);
+            image.Save(stream, System.Drawing.Imaging.ImageFormat.Jpeg);
             return;
         }
 
-        using var encoderParameters = new EncoderParameters(1);
-        encoderParameters.Param[0] = new EncoderParameter(
-            System.Drawing.Imaging.Encoder.Quality,
-            Math.Clamp((long)quality, 20L, 95L));
-
+        using var encoderParameters = new System.Drawing.Imaging.EncoderParameters(1);
+        encoderParameters.Param[0] = new System.Drawing.Imaging.EncoderParameter(System.Drawing.Imaging.Encoder.Quality, quality);
         image.Save(stream, encoder, encoderParameters);
     }
 
@@ -1311,7 +1266,7 @@ public sealed partial class SenderForm : Form
         return payload;
     }
 
-private int GetScreenIntervalMs()
+    private int GetScreenIntervalMs()
     {
         if (InvokeRequired)
         {

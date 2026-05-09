@@ -1,4 +1,4 @@
-﻿using System.Buffers.Binary;
+using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Drawing.Imaging;
 using System.Net;
@@ -68,7 +68,7 @@ public sealed partial class SenderForm : Form
 
     public SenderForm()
     {
-        Text = "LAN Sender - Step 9 Realtime Screen Monitor";
+        Text = "LAN Sender - Step 6 Screen Monitor";
         Width = 1160;
         Height = 820;
         StartPosition = FormStartPosition.CenterScreen;
@@ -308,10 +308,10 @@ public sealed partial class SenderForm : Form
             Padding = new Padding(0, 6, 0, 0),
         });
 
-        _screenIntervalBox.Minimum = 16;
-        _screenIntervalBox.Maximum = 1000;
-        _screenIntervalBox.Increment = 1;
-        _screenIntervalBox.Value = 33;
+        _screenIntervalBox.Minimum = 100;
+        _screenIntervalBox.Maximum = 5000;
+        _screenIntervalBox.Increment = 100;
+        _screenIntervalBox.Value = 500;
         _screenIntervalBox.Width = 80;
         screenOptionsPanel.Controls.Add(_screenIntervalBox);
 
@@ -325,7 +325,7 @@ public sealed partial class SenderForm : Form
         _screenQualityBox.Minimum = 20;
         _screenQualityBox.Maximum = 95;
         _screenQualityBox.Increment = 5;
-        _screenQualityBox.Value = 75;
+        _screenQualityBox.Value = 55;
         _screenQualityBox.Width = 70;
         screenOptionsPanel.Controls.Add(_screenQualityBox);
 
@@ -374,7 +374,7 @@ public sealed partial class SenderForm : Form
 
         screenLayout.Controls.Add(screenStreamPanel, 0, 2);
 
-        _screenStatusLabel.Text = "Realtime screen idle";
+        _screenStatusLabel.Text = "Screen monitor idle";
         _screenStatusLabel.Dock = DockStyle.Fill;
         _screenStatusLabel.TextAlign = ContentAlignment.MiddleLeft;
         screenLayout.Controls.Add(_screenStatusLabel, 0, 3);
@@ -1010,7 +1010,7 @@ public sealed partial class SenderForm : Form
         _screenStreamCts = new CancellationTokenSource();
         _isStreamingScreen = true;
         SetSendButtonsEnabled(_serverCts is not null);
-        UpdateScreenStatus("Realtime monitor starting");
+        UpdateScreenStatus("Screen monitor starting");
 
         bool useFixedTargets = selectedOnly;
         CancellationToken token = _screenStreamCts.Token;
@@ -1023,13 +1023,7 @@ public sealed partial class SenderForm : Form
     private async Task ScreenStreamLoopAsync(bool useFixedTargets, List<ClientConnection> fixedTargets, CancellationToken token)
     {
         var stopwatch = Stopwatch.StartNew();
-        long capturedFrames = 0;
         long sentFrames = 0;
-        long skippedFrames = 0;
-        long totalSentBytes = 0;
-        ulong lastHash = 0;
-        bool hasLastHash = false;
-        DateTime lastHeartbeatAt = DateTime.MinValue;
 
         try
         {
@@ -1042,65 +1036,31 @@ public sealed partial class SenderForm : Form
 
                 if (targets.Count == 0)
                 {
-                    UpdateScreenStatus("Realtime monitor stopped: no clients");
+                    UpdateScreenStatus("Screen monitor stopped: no clients");
                     break;
                 }
 
                 ScreenCaptureData capture = CaptureVirtualScreenJpeg(GetScreenQuality());
-                capturedFrames++;
 
-                ulong currentHash = ComputeFnv1a64(capture.ImageBytes);
-                bool changed = !hasLastHash || currentHash != lastHash;
-                bool heartbeat = (DateTime.UtcNow - lastHeartbeatAt).TotalMilliseconds >= 1000;
+                int success = 0;
 
-                if (changed || heartbeat)
+                foreach (ClientConnection connection in targets)
                 {
-                    int success = 0;
+                    token.ThrowIfCancellationRequested();
 
-                    foreach (ClientConnection connection in targets)
+                    bool ok = await SendScreenFrameToClientAsync(connection, capture, token);
+
+                    if (ok)
                     {
-                        token.ThrowIfCancellationRequested();
-
-                        bool ok = await SendScreenFrameToClientAsync(connection, capture, token);
-
-                        if (ok)
-                        {
-                            success++;
-                            totalSentBytes += capture.ImageBytes.Length;
-                        }
+                        success++;
                     }
-
-                    if (changed)
-                    {
-                        lastHash = currentHash;
-                        hasLastHash = true;
-                    }
-
-                    if (heartbeat)
-                    {
-                        lastHeartbeatAt = DateTime.UtcNow;
-                    }
-
-                    sentFrames++;
-
-                    double seconds = Math.Max(stopwatch.Elapsed.TotalSeconds, 0.001);
-                    double fps = sentFrames / seconds;
-                    double mbps = (totalSentBytes * 8.0) / seconds / 1_000_000.0;
-
-                    UpdateScreenStatus(
-                        $"Realtime: frame {capture.FrameNo}, captured {capturedFrames}, sent {sentFrames}, skipped {skippedFrames}, {capture.Width}x{capture.Height}, {FormatBytes(capture.ImageBytes.Length)}, clients {success}/{targets.Count}, {fps:0.0} fps, {mbps:0.0} Mbps");
                 }
-                else
-                {
-                    skippedFrames++;
 
-                    double seconds = Math.Max(stopwatch.Elapsed.TotalSeconds, 0.001);
-                    double fps = sentFrames / seconds;
-                    double mbps = (totalSentBytes * 8.0) / seconds / 1_000_000.0;
+                sentFrames++;
+                double fps = sentFrames / Math.Max(stopwatch.Elapsed.TotalSeconds, 0.001);
 
-                    UpdateScreenStatus(
-                        $"Realtime: no change, captured {capturedFrames}, sent {sentFrames}, skipped {skippedFrames}, {fps:0.0} fps, {mbps:0.0} Mbps");
-                }
+                UpdateScreenStatus(
+                    $"Monitoring: frame {capture.FrameNo}, {capture.Width}x{capture.Height}, {FormatBytes(capture.ImageBytes.Length)}, clients {success}/{targets.Count}, {fps:0.0} fps");
 
                 int delayMs = Math.Max(1, intervalMs - (int)loopStart.ElapsedMilliseconds);
                 await Task.Delay(delayMs, token);
@@ -1108,42 +1068,31 @@ public sealed partial class SenderForm : Form
         }
         catch (OperationCanceledException)
         {
-            UpdateScreenStatus("Realtime monitor stopped");
+            UpdateScreenStatus("Screen monitor stopped");
         }
         catch (Exception ex)
         {
-            AddLog($"Realtime monitor error: {ex.Message}");
-            UpdateScreenStatus("Realtime monitor error");
+            AddLog($"Screen monitor error: {ex.Message}");
+            UpdateScreenStatus("Screen monitor error");
         }
         finally
         {
             stopwatch.Stop();
 
-            _isStreamingScreen = false;
-
-            try
+            if (_screenStreamCts is not null)
             {
-                _screenStreamCts?.Dispose();
-            }
-            catch
-            {
+                try
+                {
+                    _screenStreamCts.Dispose();
+                }
+                catch
+                {
+                }
             }
 
             _screenStreamCts = null;
-
+            _isStreamingScreen = false;
             SetSendButtonsEnabled(_serverCts is not null);
-
-            if (!IsDisposed)
-            {
-                if (InvokeRequired)
-                {
-                    BeginInvoke(new Action(() => _stopScreenButton.Enabled = false));
-                }
-                else
-                {
-                    _stopScreenButton.Enabled = false;
-                }
-            }
         }
     }
 
@@ -1155,7 +1104,7 @@ public sealed partial class SenderForm : Form
         }
 
         _screenStreamCts.Cancel();
-        AddLog("Realtime monitor stop requested.");
+        AddLog("Screen monitor stop requested.");
     }
 
     private async Task SendScreenFrameToTargetsAsync(List<ClientConnection> targets, CancellationToken token, bool logResult)
@@ -1236,26 +1185,6 @@ public sealed partial class SenderForm : Form
         using (Graphics graphics = Graphics.FromImage(bitmap))
         {
             graphics.CopyFromScreen(bounds.Left, bounds.Top, 0, 0, bounds.Size, CopyPixelOperation.SourceCopy);
-
-            Point cursorPosition = Cursor.Position;
-
-            if (bounds.Contains(cursorPosition))
-            {
-                try
-                {
-                    Cursors.Default.Draw(
-                        graphics,
-                        new Rectangle(
-                            cursorPosition.X - bounds.Left,
-                            cursorPosition.Y - bounds.Top,
-                            Cursors.Default.Size.Width,
-                            Cursors.Default.Size.Height));
-                }
-                catch
-                {
-                    // Cursor drawing is optional.
-                }
-            }
         }
 
         using var memoryStream = new MemoryStream();
@@ -1273,8 +1202,8 @@ public sealed partial class SenderForm : Form
 
     private static void SaveJpeg(Image image, Stream stream, int quality)
     {
-        ImageCodecInfo? encoder = ImageCodecInfo.GetImageEncoders()
-            .FirstOrDefault(x => x.FormatID == ImageFormat.Jpeg.Guid);
+        ImageCodecInfo? encoder = ImageCodecInfo.GetImageDecoders()
+            .FirstOrDefault(x => string.Equals(x.FormatID.ToString(), ImageFormat.Jpeg.Guid.ToString(), StringComparison.OrdinalIgnoreCase));
 
         if (encoder is null)
         {
@@ -1283,10 +1212,7 @@ public sealed partial class SenderForm : Form
         }
 
         using var encoderParameters = new EncoderParameters(1);
-        encoderParameters.Param[0] = new EncoderParameter(
-            System.Drawing.Imaging.Encoder.Quality,
-            Math.Clamp((long)quality, 20L, 95L));
-
+        encoderParameters.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, quality);
         image.Save(stream, encoder, encoderParameters);
     }
 
@@ -1311,7 +1237,7 @@ public sealed partial class SenderForm : Form
         return payload;
     }
 
-private int GetScreenIntervalMs()
+    private int GetScreenIntervalMs()
     {
         if (InvokeRequired)
         {
@@ -1377,7 +1303,7 @@ private int GetScreenIntervalMs()
                 SetSendButtonsEnabled(false);
 
                 _clientList.Items.Clear();
-                UpdateScreenStatus("Realtime screen idle");
+                UpdateScreenStatus("Screen monitor idle");
 
                 AddLog("Server stopped.");
             }
@@ -1514,22 +1440,6 @@ private int GetScreenIntervalMs()
         }
 
         _logList.Items.Insert(0, $"[{DateTime.Now:HH:mm:ss}] {message}");
-    }
-
-    private static ulong ComputeFnv1a64(byte[] data)
-    {
-        const ulong offsetBasis = 14695981039346656037UL;
-        const ulong prime = 1099511628211UL;
-
-        ulong hash = offsetBasis;
-
-        foreach (byte b in data)
-        {
-            hash ^= b;
-            hash *= prime;
-        }
-
-        return hash;
     }
 
     private static string FormatBytes(long bytes)
