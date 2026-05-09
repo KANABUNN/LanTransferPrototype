@@ -3,7 +3,6 @@ using System.Diagnostics;
 using System.Net.Sockets;
 using System.Text.Json;
 
-using LanReceiver.Protocol;
 namespace LanReceiver;
 
 public sealed partial class ReceiverForm

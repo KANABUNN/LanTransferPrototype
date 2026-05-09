@@ -5,8 +5,6 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 
-using LanSender.Protocol;
-using LanSender.Transfers;
 namespace LanSender;
 
 public sealed partial class SenderForm

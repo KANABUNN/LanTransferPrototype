@@ -275,7 +275,7 @@ public sealed partial class ReceiverForm : Form
                     break;
                 }
 
-                await HandlePacketAsync(packet.Value);
+                await HandlePacketAsync(packet);
             }
         }
         catch (OperationCanceledException)

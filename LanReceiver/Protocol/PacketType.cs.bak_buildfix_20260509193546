@@ -1,4 +1,4 @@
-namespace LanSender.Protocol;
+namespace LanReceiver.Protocol;
 
 public static class PacketType
 {
@@ -12,7 +12,6 @@ public static class PacketType
     public const byte ScreenVideoFrame = 5;
 
     public const byte OpenTarget = 6;
-    public const byte OpenTargetResult = 13;
     public const byte TransferCancel = 7;
     public const byte BatchStart = 8;
     public const byte BatchEnd = 9;
@@ -29,7 +28,6 @@ public static class PacketType
         FileEnd => nameof(FileEnd),
         ScreenVideoFrame => nameof(ScreenVideoFrame),
         OpenTarget => nameof(OpenTarget),
-        OpenTargetResult => nameof(OpenTargetResult),
         TransferCancel => nameof(TransferCancel),
         BatchStart => nameof(BatchStart),
         BatchEnd => nameof(BatchEnd),
