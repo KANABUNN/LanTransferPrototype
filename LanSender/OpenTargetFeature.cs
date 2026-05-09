@@ -15,11 +15,14 @@ public sealed partial class SenderForm
     private readonly Button _sendFileAndOpenAllButton = new();
     private readonly Button _sendFileAndOpenSelectedButton = new();
     private readonly ListBox _openTargetList = new();
-    private readonly Label _openTargetStatusLabel = new();
+    private readonly Label _openTargetStatusLabel = new();    private readonly TextBox _manualOpenUrlBox = new();
+    private readonly Button _openManualUrlAllButton = new();
+    private readonly Button _openManualUrlSelectedButton = new();
 
     private void InitializeOpenTargetFeature()
     {
         AddOpenTargetPanel();
+        AddManualUrlPanel();
 
         _refreshOpenTargetsButton.Click += (_, _) => RefreshOpenTargetList();
         _sendOpenTargetAllButton.Click += async (_, _) => await SendOpenTargetToAllAsync();
@@ -558,6 +561,117 @@ public sealed partial class SenderForm
         }
     }
 
+    private void AddManualUrlPanel()
+    {
+        var group = new GroupBox
+        {
+            Text = "Manual URL open",
+            Dock = DockStyle.Bottom,
+            Height = 78,
+        };
+
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            RowCount = 2,
+            ColumnCount = 1,
+            Padding = new Padding(8),
+        };
+
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+
+        var inputPanel = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            RowCount = 1,
+            ColumnCount = 2,
+        };
+
+        inputPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 70));
+        inputPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+
+        inputPanel.Controls.Add(new Label
+        {
+            Text = "URL:",
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft,
+        }, 0, 0);
+
+        _manualOpenUrlBox.Dock = DockStyle.Fill;
+        _manualOpenUrlBox.PlaceholderText = "https://example.com/";
+        inputPanel.Controls.Add(_manualOpenUrlBox, 1, 0);
+
+        layout.Controls.Add(inputPanel, 0, 0);
+
+        var buttonPanel = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+        };
+
+        _openManualUrlAllButton.Text = "Open URL all";
+        _openManualUrlAllButton.Width = 130;
+        _openManualUrlAllButton.Enabled = true;
+        _openManualUrlAllButton.Click += async (_, _) => await SendManualUrlToAllAsync();
+        buttonPanel.Controls.Add(_openManualUrlAllButton);
+
+        _openManualUrlSelectedButton.Text = "Open URL selected";
+        _openManualUrlSelectedButton.Width = 155;
+        _openManualUrlSelectedButton.Enabled = true;
+        _openManualUrlSelectedButton.Click += async (_, _) => await SendManualUrlToSelectedAsync();
+        buttonPanel.Controls.Add(_openManualUrlSelectedButton);
+
+        layout.Controls.Add(buttonPanel, 0, 1);
+
+        group.Controls.Add(layout);
+        Controls.Add(group);
+        group.BringToFront();
+    }
+
+    private async Task SendManualUrlToAllAsync()
+    {
+        await SendManualUrlToTargetsAsync(GetClientSnapshot());
+    }
+
+    private async Task SendManualUrlToSelectedAsync()
+    {
+        if (_clientList.SelectedItem is not ClientConnection connection)
+        {
+            AddLog("Select a client first.");
+            return;
+        }
+
+        await SendManualUrlToTargetsAsync(new List<ClientConnection> { connection });
+    }
+
+    private async Task SendManualUrlToTargetsAsync(List<ClientConnection> targets)
+    {
+        if (targets.Count == 0)
+        {
+            AddLog("No connected clients.");
+            return;
+        }
+
+        string url = _manualOpenUrlBox.Text.Trim();
+
+        if (!IsHttpUrl(url))
+        {
+            AddLog("Enter a valid http or https URL.");
+            return;
+        }
+
+        var command = new OpenTargetCommand
+        {
+            RequestId = Guid.NewGuid().ToString("N"),
+            TargetType = OpenTargetType.Url,
+            Value = url,
+            DisplayName = url,
+        };
+
+        await SendOpenTargetCommandToTargetsAsync(targets, command);
+    }
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
 }
