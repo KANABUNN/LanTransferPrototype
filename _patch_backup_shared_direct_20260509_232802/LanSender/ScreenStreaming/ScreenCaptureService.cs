@@ -1,5 +1,5 @@
 using System.Drawing.Imaging;
-using LanShared.Contracts;
+using LanSender.Contracts;
 
 namespace LanSender.ScreenStreaming;
 

@@ -1,6 +1,6 @@
 using System.Buffers.Binary;
 using System.Text.Json;
-using LanShared.Contracts;
+using LanSender.Contracts;
 
 namespace LanSender.ScreenStreaming;
 
