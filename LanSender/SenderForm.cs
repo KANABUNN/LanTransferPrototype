@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -36,6 +36,7 @@ public sealed partial class SenderForm : Form
     private readonly Button _stopScreenButton = new();
     private readonly NumericUpDown _screenFpsBox = new();
     private readonly NumericUpDown _screenQualityBox = new();
+    private readonly NumericUpDown _screenScaleBox = new();
     private readonly Label _screenStatusLabel = new();
 
     private readonly ProgressBar _progressBar = new();
@@ -233,9 +234,17 @@ public sealed partial class SenderForm : Form
         _screenQualityBox.Minimum = 20;
         _screenQualityBox.Maximum = 95;
         _screenQualityBox.Increment = 5;
-        _screenQualityBox.Value = 75;
+        _screenQualityBox.Value = 70;
         _screenQualityBox.Width = 70;
         screenOptionsPanel.Controls.Add(_screenQualityBox);
+
+        screenOptionsPanel.Controls.Add(new Label { Text = "Scale:%", AutoSize = true, Padding = new Padding(12, 6, 0, 0) });
+        _screenScaleBox.Minimum = 25;
+        _screenScaleBox.Maximum = 100;
+        _screenScaleBox.Increment = 5;
+        _screenScaleBox.Value = 75;
+        _screenScaleBox.Width = 70;
+        screenOptionsPanel.Controls.Add(_screenScaleBox);
         screenLayout.Controls.Add(screenOptionsPanel, 0, 0);
 
         var screenOncePanel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
@@ -837,6 +846,7 @@ public sealed partial class SenderForm : Form
             StreamId = streamId,
             Fps = (int)_screenFpsBox.Value,
             Quality = (int)_screenQualityBox.Value,
+            ScalePercent = (int)_screenScaleBox.Value,
         };
 
         List<ClientConnection> InitialTargets() => selectedOnly ? fixedTargets.ToList() : GetClientSnapshot();
@@ -845,7 +855,7 @@ public sealed partial class SenderForm : Form
         CancellationToken token = _screenStreamCts.Token;
         var streamer = new ScreenVideoStreamer(new ScreenCaptureService());
         streamer.StatsChanged += stats => UpdateScreenStatus(
-            $"動画配信中: frame {stats.FrameNo}, {stats.Width}x{stats.Height}, {FormatBytes(stats.LastFrameBytes)}, clients {stats.SuccessClients}, {stats.Fps:0.0} fps, {stats.Mbps:0.0} Mbps");
+            $"動画配信中: target {stats.TargetFps}fps / actual {stats.Fps:0.0}fps / scale {stats.ScalePercent}% / cap {stats.CaptureMs:0.0}ms / send {stats.SendMs:0.0}ms / loop {stats.LoopMs:0.0}ms / {FormatBytes(stats.LastFrameBytes)} / {stats.Mbps:0.0} Mbps");
 
         _ = Task.Run(async () =>
         {
