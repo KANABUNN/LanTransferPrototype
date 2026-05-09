@@ -25,6 +25,9 @@ public sealed class ScreenVideoStreamer
         int targetFps = Math.Clamp(options.Fps, 1, 60);
         int quality = Math.Clamp(options.Quality, 20, 95);
         int scalePercent = Math.Clamp(options.ScalePercent, 25, 100);
+        string captureSource = string.IsNullOrWhiteSpace(options.CaptureSource)
+            ? ScreenCaptureSource.Primary
+            : options.CaptureSource;
 
         double frameIntervalTicks = Stopwatch.Frequency / (double)targetFps;
         double nextFrameTicks = Stopwatch.GetTimestamp();
@@ -63,7 +66,7 @@ public sealed class ScreenVideoStreamer
                 }
             }
 
-            ScreenFrame frame = _captureService.CaptureVirtualScreenJpeg(streamId, ++frameNo, quality, scalePercent);
+            ScreenFrame frame = _captureService.CaptureDesktopJpeg(streamId, ++frameNo, quality, scalePercent, captureSource);
             lastCaptureMs = frame.CaptureMs;
             lastCopyMs = frame.CopyMs;
             lastEncodeMs = frame.EncodeMs;
@@ -97,6 +100,7 @@ public sealed class ScreenVideoStreamer
                     mbps,
                     targetFps,
                     scalePercent,
+                    captureSource,
                     lastCaptureMs,
                     lastCopyMs,
                     lastEncodeMs,
@@ -116,8 +120,17 @@ public sealed class ScreenVideoOptions
     public int Fps { get; init; } = 30;
     public int Quality { get; init; } = 70;
 
-    // 100 = original size. 75 is usually much faster for MJPEG.
-    public int ScalePercent { get; init; } = 75;
+    // 100 = original size. 60 is the practical default for 30fps MJPEG.
+    public int ScalePercent { get; init; } = 60;
+
+    // Primary is faster than Virtual when the sender has multiple displays.
+    public string CaptureSource { get; init; } = ScreenCaptureSource.Primary;
+}
+
+public static class ScreenCaptureSource
+{
+    public const string Primary = "Primary";
+    public const string Virtual = "Virtual";
 }
 
 public sealed record ScreenStreamStats(
@@ -131,6 +144,7 @@ public sealed record ScreenStreamStats(
     double Mbps,
     int TargetFps,
     int ScalePercent,
+    string CaptureSource,
     double CaptureMs,
     double CopyMs,
     double EncodeMs,

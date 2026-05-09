@@ -37,6 +37,7 @@ public sealed partial class SenderForm : Form
     private readonly NumericUpDown _screenFpsBox = new();
     private readonly NumericUpDown _screenQualityBox = new();
     private readonly NumericUpDown _screenScaleBox = new();
+    private readonly ComboBox _screenCaptureSourceBox = new();
     private readonly Label _screenStatusLabel = new();
 
     private readonly ProgressBar _progressBar = new();
@@ -242,9 +243,17 @@ public sealed partial class SenderForm : Form
         _screenScaleBox.Minimum = 25;
         _screenScaleBox.Maximum = 100;
         _screenScaleBox.Increment = 5;
-        _screenScaleBox.Value = 75;
+        _screenScaleBox.Value = 60;
         _screenScaleBox.Width = 70;
         screenOptionsPanel.Controls.Add(_screenScaleBox);
+
+        screenOptionsPanel.Controls.Add(new Label { Text = "Source:", AutoSize = true, Padding = new Padding(12, 6, 0, 0) });
+        _screenCaptureSourceBox.DropDownStyle = ComboBoxStyle.DropDownList;
+        _screenCaptureSourceBox.Width = 90;
+        _screenCaptureSourceBox.Items.Add(ScreenCaptureSource.Primary);
+        _screenCaptureSourceBox.Items.Add(ScreenCaptureSource.Virtual);
+        _screenCaptureSourceBox.SelectedItem = ScreenCaptureSource.Primary;
+        screenOptionsPanel.Controls.Add(_screenCaptureSourceBox);
         screenLayout.Controls.Add(screenOptionsPanel, 0, 0);
 
         var screenOncePanel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
@@ -847,6 +856,7 @@ public sealed partial class SenderForm : Form
             Fps = (int)_screenFpsBox.Value,
             Quality = (int)_screenQualityBox.Value,
             ScalePercent = (int)_screenScaleBox.Value,
+            CaptureSource = _screenCaptureSourceBox.SelectedItem?.ToString() ?? ScreenCaptureSource.Primary,
         };
 
         List<ClientConnection> InitialTargets() => selectedOnly ? fixedTargets.ToList() : GetClientSnapshot();
@@ -855,7 +865,7 @@ public sealed partial class SenderForm : Form
         CancellationToken token = _screenStreamCts.Token;
         var streamer = new ScreenVideoStreamer(new ScreenCaptureService());
         streamer.StatsChanged += stats => UpdateScreenStatus(
-            $"動画配信中: target {stats.TargetFps}fps / actual {stats.Fps:0.0}fps / scale {stats.ScalePercent}% / cap {stats.CaptureMs:0.0}ms (copy {stats.CopyMs:0.0} / enc {stats.EncodeMs:0.0}) / send {stats.SendMs:0.0}ms / loop {stats.LoopMs:0.0}ms / {FormatBytes(stats.LastFrameBytes)} / {stats.Mbps:0.0} Mbps");
+            $"動画配信中: target {stats.TargetFps}fps / actual {stats.Fps:0.0}fps / scale {stats.ScalePercent}% / source {stats.CaptureSource} / cap {stats.CaptureMs:0.0}ms (copy {stats.CopyMs:0.0} / enc {stats.EncodeMs:0.0}) / send {stats.SendMs:0.0}ms / loop {stats.LoopMs:0.0}ms / {FormatBytes(stats.LastFrameBytes)} / {stats.Mbps:0.0} Mbps");
 
         _ = Task.Run(async () =>
         {

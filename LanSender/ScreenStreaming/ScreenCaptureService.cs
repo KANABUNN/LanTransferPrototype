@@ -13,12 +13,22 @@ public sealed class ScreenCaptureService
 
     public ScreenFrame CaptureVirtualScreenJpeg(string streamId, long frameNo, int jpegQuality)
     {
-        return CaptureVirtualScreenJpeg(streamId, frameNo, jpegQuality, 100);
+        return CaptureDesktopJpeg(streamId, frameNo, jpegQuality, 100, ScreenCaptureSource.Virtual);
     }
 
     public ScreenFrame CaptureVirtualScreenJpeg(string streamId, long frameNo, int jpegQuality, int scalePercent)
     {
-        Rectangle bounds = SystemInformation.VirtualScreen;
+        return CaptureDesktopJpeg(streamId, frameNo, jpegQuality, scalePercent, ScreenCaptureSource.Virtual);
+    }
+
+    public ScreenFrame CaptureDesktopJpeg(
+        string streamId,
+        long frameNo,
+        int jpegQuality,
+        int scalePercent,
+        string captureSource)
+    {
+        Rectangle bounds = ResolveCaptureBounds(captureSource);
         jpegQuality = Math.Clamp(jpegQuality, 20, 95);
         scalePercent = Math.Clamp(scalePercent, 25, 100);
 
@@ -62,6 +72,16 @@ public sealed class ScreenCaptureService
         };
 
         return new ScreenFrame(info, memory.ToArray(), totalStopwatch.Elapsed.TotalMilliseconds, copyMs, encodeMs);
+    }
+
+    private static Rectangle ResolveCaptureBounds(string captureSource)
+    {
+        if (string.Equals(captureSource, ScreenCaptureSource.Primary, StringComparison.OrdinalIgnoreCase))
+        {
+            return Screen.PrimaryScreen?.Bounds ?? SystemInformation.VirtualScreen;
+        }
+
+        return SystemInformation.VirtualScreen;
     }
 
     private static void CaptureAndScaleDesktop(Rectangle sourceBounds, Bitmap destination)
