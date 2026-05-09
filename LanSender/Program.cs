@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -22,34 +23,41 @@ public sealed class SenderForm : Form
 
     private readonly TextBox _portBox = new();
     private readonly TextBox _messageBox = new();
-    private readonly TextBox _filePathBox = new();
 
     private readonly Button _startButton = new();
     private readonly Button _stopButton = new();
     private readonly Button _sendAllButton = new();
     private readonly Button _sendSelectedButton = new();
-    private readonly Button _browseFileButton = new();
+
+    private readonly Button _addFilesButton = new();
+    private readonly Button _addFolderButton = new();
+    private readonly Button _clearFilesButton = new();
     private readonly Button _sendFileAllButton = new();
     private readonly Button _sendFileSelectedButton = new();
+    private readonly Button _cancelTransferButton = new();
 
     private readonly ProgressBar _progressBar = new();
     private readonly Label _progressLabel = new();
 
     private readonly ListBox _clientList = new();
+    private readonly ListBox _fileList = new();
     private readonly ListBox _logList = new();
 
     private readonly List<ClientConnection> _clients = new();
+    private readonly List<TransferItem> _transferItems = new();
 
     private TcpListener? _listener;
-    private CancellationTokenSource? _cts;
+    private CancellationTokenSource? _serverCts;
+    private CancellationTokenSource? _transferCts;
+
     private Task? _acceptTask;
     private bool _isSendingFile;
 
     public SenderForm()
     {
-        Text = "LAN Sender - Step 3 File Transfer";
-        Width = 960;
-        Height = 680;
+        Text = "LAN Sender - Step 4 Multi File Transfer";
+        Width = 1100;
+        Height = 760;
         StartPosition = FormStartPosition.CenterScreen;
 
         BuildUi();
@@ -60,9 +68,13 @@ public sealed class SenderForm : Form
         _sendAllButton.Click += async (_, _) => await SendMessageToAllAsync();
         _sendSelectedButton.Click += async (_, _) => await SendMessageToSelectedAsync();
 
-        _browseFileButton.Click += (_, _) => BrowseFile();
-        _sendFileAllButton.Click += async (_, _) => await SendFileToAllAsync();
-        _sendFileSelectedButton.Click += async (_, _) => await SendFileToSelectedAsync();
+        _addFilesButton.Click += (_, _) => AddFiles();
+        _addFolderButton.Click += (_, _) => AddFolder();
+        _clearFilesButton.Click += (_, _) => ClearTransferItems();
+
+        _sendFileAllButton.Click += async (_, _) => await SendFilesToAllAsync();
+        _sendFileSelectedButton.Click += async (_, _) => await SendFilesToSelectedAsync();
+        _cancelTransferButton.Click += (_, _) => CancelTransfer();
 
         FormClosing += (_, _) => StopServer();
     }
@@ -77,14 +89,14 @@ public sealed class SenderForm : Form
             Padding = new Padding(12),
         };
 
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60));
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 36));
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 64));
 
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 120));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 150));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 110));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 48));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 52));
 
         var serverPanel = new FlowLayoutPanel
         {
@@ -163,65 +175,81 @@ public sealed class SenderForm : Form
 
         var fileGroup = new GroupBox
         {
-            Text = "ファイル送信",
+            Text = "ファイル・フォルダ送信",
             Dock = DockStyle.Fill,
         };
 
         var fileLayout = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            RowCount = 4,
-            ColumnCount = 2,
+            RowCount = 5,
+            ColumnCount = 1,
             Padding = new Padding(8),
         };
 
-        fileLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        fileLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
-
-        fileLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-        fileLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
-        fileLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        fileLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
         fileLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        fileLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+        fileLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        fileLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
 
-        _filePathBox.Dock = DockStyle.Fill;
-        _filePathBox.ReadOnly = true;
-        fileLayout.Controls.Add(_filePathBox, 0, 0);
-
-        _browseFileButton.Text = "ファイル選択";
-        _browseFileButton.Dock = DockStyle.Fill;
-        fileLayout.Controls.Add(_browseFileButton, 1, 0);
-
-        var fileButtonPanel = new FlowLayoutPanel
+        var fileAddPanel = new FlowLayoutPanel
         {
             Dock = DockStyle.Fill,
             FlowDirection = FlowDirection.LeftToRight,
             WrapContents = false,
         };
 
-        _sendFileAllButton.Text = "全員へファイル送信";
-        _sendFileAllButton.Width = 150;
+        _addFilesButton.Text = "ファイル追加";
+        _addFilesButton.Width = 120;
+        fileAddPanel.Controls.Add(_addFilesButton);
+
+        _addFolderButton.Text = "フォルダ追加";
+        _addFolderButton.Width = 120;
+        fileAddPanel.Controls.Add(_addFolderButton);
+
+        _clearFilesButton.Text = "一覧クリア";
+        _clearFilesButton.Width = 120;
+        fileAddPanel.Controls.Add(_clearFilesButton);
+
+        fileLayout.Controls.Add(fileAddPanel, 0, 0);
+
+        _fileList.Dock = DockStyle.Fill;
+        fileLayout.Controls.Add(_fileList, 0, 1);
+
+        var fileSendPanel = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+        };
+
+        _sendFileAllButton.Text = "全員へ送信";
+        _sendFileAllButton.Width = 130;
         _sendFileAllButton.Enabled = false;
-        fileButtonPanel.Controls.Add(_sendFileAllButton);
+        fileSendPanel.Controls.Add(_sendFileAllButton);
 
-        _sendFileSelectedButton.Text = "選択先へファイル送信";
-        _sendFileSelectedButton.Width = 170;
+        _sendFileSelectedButton.Text = "選択先へ送信";
+        _sendFileSelectedButton.Width = 140;
         _sendFileSelectedButton.Enabled = false;
-        fileButtonPanel.Controls.Add(_sendFileSelectedButton);
+        fileSendPanel.Controls.Add(_sendFileSelectedButton);
 
-        fileLayout.Controls.Add(fileButtonPanel, 0, 1);
-        fileLayout.SetColumnSpan(fileButtonPanel, 2);
+        _cancelTransferButton.Text = "キャンセル";
+        _cancelTransferButton.Width = 120;
+        _cancelTransferButton.Enabled = false;
+        fileSendPanel.Controls.Add(_cancelTransferButton);
+
+        fileLayout.Controls.Add(fileSendPanel, 0, 2);
 
         _progressBar.Dock = DockStyle.Fill;
         _progressBar.Minimum = 0;
         _progressBar.Maximum = 1000;
-        fileLayout.Controls.Add(_progressBar, 0, 2);
-        fileLayout.SetColumnSpan(_progressBar, 2);
+        fileLayout.Controls.Add(_progressBar, 0, 3);
 
         _progressLabel.Text = "待機中";
         _progressLabel.Dock = DockStyle.Fill;
         _progressLabel.TextAlign = ContentAlignment.MiddleLeft;
-        fileLayout.Controls.Add(_progressLabel, 0, 3);
-        fileLayout.SetColumnSpan(_progressLabel, 2);
+        fileLayout.Controls.Add(_progressLabel, 0, 4);
 
         fileGroup.Controls.Add(fileLayout);
         root.Controls.Add(fileGroup, 1, 3);
@@ -242,7 +270,7 @@ public sealed class SenderForm : Form
 
     private void StartServer()
     {
-        if (_cts is not null)
+        if (_serverCts is not null)
         {
             AddLog("すでにサーバーは起動しています。");
             return;
@@ -256,12 +284,12 @@ public sealed class SenderForm : Form
 
         try
         {
-            _cts = new CancellationTokenSource();
+            _serverCts = new CancellationTokenSource();
 
             _listener = new TcpListener(IPAddress.Any, port);
             _listener.Start();
 
-            _acceptTask = Task.Run(() => AcceptLoopAsync(_cts.Token));
+            _acceptTask = Task.Run(() => AcceptLoopAsync(_serverCts.Token));
 
             _startButton.Enabled = false;
             _stopButton.Enabled = true;
@@ -452,23 +480,116 @@ public sealed class SenderForm : Form
         }
     }
 
-    private void BrowseFile()
+    private void AddFiles()
     {
         using var dialog = new OpenFileDialog
         {
             Title = "送信するファイルを選択",
             CheckFileExists = true,
-            Multiselect = false,
+            Multiselect = true,
         };
 
-        if (dialog.ShowDialog(this) == DialogResult.OK)
+        if (dialog.ShowDialog(this) != DialogResult.OK)
         {
-            _filePathBox.Text = dialog.FileName;
-            AddLog($"ファイル選択: {dialog.FileName}");
+            return;
+        }
+
+        int added = 0;
+
+        foreach (string path in dialog.FileNames)
+        {
+            if (TryAddTransferItem(path, Path.GetFileName(path)))
+            {
+                added++;
+            }
+        }
+
+        AddLog($"ファイル追加: {added} 件");
+    }
+
+    private void AddFolder()
+    {
+        using var dialog = new FolderBrowserDialog
+        {
+            Description = "送信するフォルダを選択してください",
+            UseDescriptionForTitle = true,
+        };
+
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        string rootFolder = dialog.SelectedPath;
+        string rootName = Path.GetFileName(rootFolder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+
+        int added = 0;
+
+        foreach (string path in Directory.EnumerateFiles(rootFolder, "*", SearchOption.AllDirectories))
+        {
+            string relative = Path.GetRelativePath(rootFolder, path);
+            string sendPath = Path.Combine(rootName, relative);
+
+            if (TryAddTransferItem(path, sendPath))
+            {
+                added++;
+            }
+        }
+
+        AddLog($"フォルダ追加: {rootFolder} / {added} 件");
+    }
+
+    private bool TryAddTransferItem(string fullPath, string relativePath)
+    {
+        if (!File.Exists(fullPath))
+        {
+            return false;
+        }
+
+        string normalizedFullPath = Path.GetFullPath(fullPath);
+
+        lock (_transferItems)
+        {
+            if (_transferItems.Any(x => string.Equals(x.FullPath, normalizedFullPath, StringComparison.OrdinalIgnoreCase)))
+            {
+                return false;
+            }
+
+            var info = new FileInfo(normalizedFullPath);
+
+            var item = new TransferItem
+            {
+                FullPath = normalizedFullPath,
+                RelativePath = relativePath,
+                Size = info.Length,
+            };
+
+            _transferItems.Add(item);
+            _fileList.Items.Add(item);
+
+            return true;
         }
     }
 
-    private async Task SendFileToAllAsync()
+    private void ClearTransferItems()
+    {
+        if (_isSendingFile)
+        {
+            AddLog("送信中は一覧をクリアできません。");
+            return;
+        }
+
+        lock (_transferItems)
+        {
+            _transferItems.Clear();
+        }
+
+        _fileList.Items.Clear();
+        UpdateProgress(0, 1, "待機中");
+        AddLog("送信ファイル一覧をクリアしました。");
+    }
+
+    private async Task SendFilesToAllAsync()
     {
         List<ClientConnection> snapshot;
 
@@ -477,10 +598,10 @@ public sealed class SenderForm : Form
             snapshot = _clients.ToList();
         }
 
-        await SendFileToTargetsAsync(snapshot);
+        await SendFilesToTargetsAsync(snapshot);
     }
 
-    private async Task SendFileToSelectedAsync()
+    private async Task SendFilesToSelectedAsync()
     {
         if (_clientList.SelectedItem is not ClientConnection connection)
         {
@@ -488,10 +609,10 @@ public sealed class SenderForm : Form
             return;
         }
 
-        await SendFileToTargetsAsync(new List<ClientConnection> { connection });
+        await SendFilesToTargetsAsync(new List<ClientConnection> { connection });
     }
 
-    private async Task SendFileToTargetsAsync(List<ClientConnection> targets)
+    private async Task SendFilesToTargetsAsync(List<ClientConnection> targets)
     {
         if (_isSendingFile)
         {
@@ -499,11 +620,16 @@ public sealed class SenderForm : Form
             return;
         }
 
-        string filePath = _filePathBox.Text.Trim();
+        List<TransferItem> items;
 
-        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+        lock (_transferItems)
         {
-            AddLog("送信するファイルを選択してください。");
+            items = _transferItems.ToList();
+        }
+
+        if (items.Count == 0)
+        {
+            AddLog("送信するファイルを追加してください。");
             return;
         }
 
@@ -513,81 +639,147 @@ public sealed class SenderForm : Form
             return;
         }
 
-        var fileInfo = new FileInfo(filePath);
+        items = items.Where(x => File.Exists(x.FullPath)).ToList();
 
-        if (fileInfo.Length < 0)
+        if (items.Count == 0)
         {
-            AddLog("ファイルサイズが不正です。");
+            AddLog("送信可能なファイルがありません。");
             return;
         }
 
+        long oneClientBytes = items.Sum(x => x.Size);
+        long totalBytes = oneClientBytes * targets.Count;
+
         _isSendingFile = true;
+        _transferCts = new CancellationTokenSource();
+
         SetSendButtonsEnabled(false);
-        UpdateProgress(0, 1, "送信準備中");
+        _cancelTransferButton.Enabled = true;
+
+        long totalSentBytes = 0;
+        int successClients = 0;
+        int canceledClients = 0;
+        int failedClients = 0;
+
+        var stopwatch = Stopwatch.StartNew();
+
+        UpdateProgress(0, Math.Max(totalBytes, 1), "送信準備中");
 
         try
         {
-            long totalBytes = fileInfo.Length * targets.Count;
-            long totalSentBytes = 0;
-            int successCount = 0;
-
             foreach (var connection in targets)
             {
-                bool ok = await SendFileToClientAsync(
+                if (_transferCts.IsCancellationRequested)
+                {
+                    break;
+                }
+
+                TransferResult result = await SendBatchToClientAsync(
                     connection,
-                    fileInfo,
+                    items,
+                    _transferCts.Token,
                     sentBytes =>
                     {
                         totalSentBytes += sentBytes;
+
+                        double seconds = Math.Max(stopwatch.Elapsed.TotalSeconds, 0.001);
+                        long speed = (long)(totalSentBytes / seconds);
+
                         UpdateProgress(
                             totalSentBytes,
-                            totalBytes,
-                            $"送信中: {fileInfo.Name} / {FormatBytes(totalSentBytes)} / {FormatBytes(totalBytes)}");
+                            Math.Max(totalBytes, 1),
+                            $"送信中: {FormatBytes(totalSentBytes)} / {FormatBytes(totalBytes)} / {FormatBytes(speed)}/s");
                     });
 
-                if (ok)
+                switch (result)
                 {
-                    successCount++;
+                    case TransferResult.Success:
+                        successClients++;
+                        break;
+
+                    case TransferResult.Canceled:
+                        canceledClients++;
+                        break;
+
+                    case TransferResult.Failed:
+                        failedClients++;
+                        break;
                 }
             }
 
-            UpdateProgress(1000, 1000, $"送信完了: {successCount}/{targets.Count} 台");
-            AddLog($"ファイル送信完了: {fileInfo.Name} / {successCount}/{targets.Count} 台");
+            if (_transferCts.IsCancellationRequested)
+            {
+                UpdateProgress(totalSentBytes, Math.Max(totalBytes, 1), "送信キャンセル済み");
+                AddLog($"送信キャンセル: 成功 {successClients} 台 / 失敗 {failedClients} 台");
+            }
+            else
+            {
+                UpdateProgress(1000, 1000, $"送信完了: 成功 {successClients} 台 / 失敗 {failedClients} 台");
+                AddLog($"送信完了: 成功 {successClients} 台 / 失敗 {failedClients} 台 / キャンセル {canceledClients} 台");
+            }
         }
         finally
         {
+            stopwatch.Stop();
+
+            _transferCts.Dispose();
+            _transferCts = null;
             _isSendingFile = false;
-            SetSendButtonsEnabled(_cts is not null);
+
+            SetSendButtonsEnabled(_serverCts is not null);
+            _cancelTransferButton.Enabled = false;
         }
     }
 
-    private async Task<bool> SendFileToClientAsync(
+    private async Task<TransferResult> SendBatchToClientAsync(
         ClientConnection connection,
-        FileInfo fileInfo,
+        List<TransferItem> items,
+        CancellationToken token,
         Action<int> onChunkSent)
     {
+        bool lockTaken = false;
+
         try
         {
-            var startInfo = new FileStartInfo
+            await connection.WriteLock.WaitAsync(token);
+            lockTaken = true;
+
+            NetworkStream stream = connection.Client.GetStream();
+
+            long totalSize = items.Sum(x => x.Size);
+
+            var batchInfo = new BatchStartInfo
             {
-                FileName = fileInfo.Name,
-                FileSize = fileInfo.Length,
+                FileCount = items.Count,
+                TotalSize = totalSize,
             };
 
-            byte[] startPayload = JsonSerializer.SerializeToUtf8Bytes(startInfo);
+            await NetPacket.WriteAsync(
+                stream,
+                PacketType.BatchStart,
+                JsonSerializer.SerializeToUtf8Bytes(batchInfo),
+                token);
 
-            await connection.WriteLock.WaitAsync();
-
-            try
+            foreach (var item in items)
             {
-                NetworkStream stream = connection.Client.GetStream();
+                token.ThrowIfCancellationRequested();
 
-                await NetPacket.WriteAsync(stream, PacketType.FileStart, startPayload, CancellationToken.None);
+                var startInfo = new FileStartInfo
+                {
+                    FileName = item.RelativePath,
+                    FileSize = item.Size,
+                };
+
+                await NetPacket.WriteAsync(
+                    stream,
+                    PacketType.FileStart,
+                    JsonSerializer.SerializeToUtf8Bytes(startInfo),
+                    token);
 
                 byte[] buffer = new byte[FileChunkSize];
 
                 await using var fileStream = new FileStream(
-                    fileInfo.FullName,
+                    item.FullPath,
                     FileMode.Open,
                     FileAccess.Read,
                     FileShare.Read,
@@ -596,7 +788,9 @@ public sealed class SenderForm : Form
 
                 while (true)
                 {
-                    int read = await fileStream.ReadAsync(buffer.AsMemory(0, buffer.Length));
+                    token.ThrowIfCancellationRequested();
+
+                    int read = await fileStream.ReadAsync(buffer.AsMemory(0, buffer.Length), token);
 
                     if (read == 0)
                     {
@@ -605,33 +799,84 @@ public sealed class SenderForm : Form
 
                     byte[] chunk = buffer.AsSpan(0, read).ToArray();
 
-                    await NetPacket.WriteAsync(stream, PacketType.FileChunk, chunk, CancellationToken.None);
+                    await NetPacket.WriteAsync(stream, PacketType.FileChunk, chunk, token);
                     onChunkSent(read);
                 }
 
-                await NetPacket.WriteAsync(stream, PacketType.FileEnd, Array.Empty<byte>(), CancellationToken.None);
-            }
-            finally
-            {
-                connection.WriteLock.Release();
+                await NetPacket.WriteAsync(stream, PacketType.FileEnd, Array.Empty<byte>(), token);
             }
 
-            AddLog($"ファイル送信成功: {connection.DisplayName} / {fileInfo.Name}");
-            return true;
+            await NetPacket.WriteAsync(stream, PacketType.BatchEnd, Array.Empty<byte>(), token);
+
+            AddLog($"ファイル送信成功: {connection.DisplayName} / {items.Count} 件");
+            return TransferResult.Success;
+        }
+        catch (OperationCanceledException)
+        {
+            AddLog($"ファイル送信キャンセル: {connection.DisplayName}");
+
+            try
+            {
+                if (lockTaken)
+                {
+                    NetworkStream stream = connection.Client.GetStream();
+
+                    var cancelInfo = new TransferCancelInfo
+                    {
+                        Reason = "送信側でキャンセルされました。",
+                    };
+
+                    await NetPacket.WriteAsync(
+                        stream,
+                        PacketType.TransferCancel,
+                        JsonSerializer.SerializeToUtf8Bytes(cancelInfo),
+                        CancellationToken.None);
+                }
+            }
+            catch
+            {
+            }
+
+            return TransferResult.Canceled;
         }
         catch (Exception ex)
         {
             AddLog($"ファイル送信失敗: {connection.DisplayName} / {ex.Message}");
             RemoveClient(connection);
-            return false;
+            return TransferResult.Failed;
         }
+        finally
+        {
+            if (lockTaken)
+            {
+                try
+                {
+                    connection.WriteLock.Release();
+                }
+                catch
+                {
+                }
+            }
+        }
+    }
+
+    private void CancelTransfer()
+    {
+        if (!_isSendingFile || _transferCts is null)
+        {
+            return;
+        }
+
+        _transferCts.Cancel();
+        AddLog("送信キャンセルを要求しました。");
     }
 
     private void StopServer()
     {
         try
         {
-            _cts?.Cancel();
+            _transferCts?.Cancel();
+            _serverCts?.Cancel();
 
             try
             {
@@ -654,11 +899,11 @@ public sealed class SenderForm : Form
                 connection.Dispose();
             }
 
-            _cts?.Dispose();
+            _serverCts?.Dispose();
         }
         finally
         {
-            _cts = null;
+            _serverCts = null;
             _listener = null;
             _acceptTask = null;
             _isSendingFile = false;
@@ -692,7 +937,12 @@ public sealed class SenderForm : Form
         _sendSelectedButton.Enabled = actual;
         _sendFileAllButton.Enabled = actual;
         _sendFileSelectedButton.Enabled = actual;
-        _browseFileButton.Enabled = !_isSendingFile;
+
+        _addFilesButton.Enabled = !_isSendingFile;
+        _addFolderButton.Enabled = !_isSendingFile;
+        _clearFilesButton.Enabled = !_isSendingFile;
+
+        _cancelTransferButton.Enabled = _isSendingFile;
     }
 
     private void RemoveClient(ClientConnection connection)
@@ -828,6 +1078,49 @@ public sealed class ClientConnection : IDisposable
     }
 }
 
+public sealed class TransferItem
+{
+    public required string FullPath { get; init; }
+
+    public required string RelativePath { get; init; }
+
+    public required long Size { get; init; }
+
+    public override string ToString()
+    {
+        return $"{RelativePath} ({FormatBytes(Size)})";
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        string[] units = { "B", "KB", "MB", "GB", "TB" };
+        double value = bytes;
+        int unit = 0;
+
+        while (value >= 1024 && unit < units.Length - 1)
+        {
+            value /= 1024;
+            unit++;
+        }
+
+        return $"{value:0.##} {units[unit]}";
+    }
+}
+
+public enum TransferResult
+{
+    Success,
+    Canceled,
+    Failed,
+}
+
+public sealed class BatchStartInfo
+{
+    public int FileCount { get; set; }
+
+    public long TotalSize { get; set; }
+}
+
 public sealed class FileStartInfo
 {
     public string FileName { get; set; } = "";
@@ -835,15 +1128,25 @@ public sealed class FileStartInfo
     public long FileSize { get; set; }
 }
 
+public sealed class TransferCancelInfo
+{
+    public string Reason { get; set; } = "";
+}
+
 public static class PacketType
 {
     public const byte TextMessage = 1;
+
     public const byte FileStart = 2;
     public const byte FileChunk = 3;
     public const byte FileEnd = 4;
 
     public const byte ScreenFrame = 5;
     public const byte WebOpen = 6;
+
+    public const byte TransferCancel = 7;
+    public const byte BatchStart = 8;
+    public const byte BatchEnd = 9;
 }
 
 public static class NetPacket

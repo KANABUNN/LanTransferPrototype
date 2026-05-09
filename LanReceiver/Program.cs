@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
@@ -25,6 +26,9 @@ public sealed class ReceiverForm : Form
     private readonly Button _disconnectButton = new();
     private readonly Button _clearButton = new();
     private readonly Button _chooseFolderButton = new();
+    private readonly Button _openFolderButton = new();
+
+    private readonly CheckBox _openFolderAfterReceiveCheck = new();
 
     private readonly Label _statusLabel = new();
     private readonly Label _progressLabel = new();
@@ -39,11 +43,18 @@ public sealed class ReceiverForm : Form
 
     private FileReceiveSession? _fileSession;
 
+    private bool _batchActive;
+    private int _batchExpectedFiles;
+    private int _batchReceivedFiles;
+    private long _batchExpectedBytes;
+    private long _batchReceivedBytes;
+    private readonly Stopwatch _batchStopwatch = new();
+
     public ReceiverForm()
     {
-        Text = "LAN Receiver - Step 3 File Transfer";
-        Width = 880;
-        Height = 680;
+        Text = "LAN Receiver - Step 4 Multi File Transfer";
+        Width = 960;
+        Height = 720;
         StartPosition = FormStartPosition.CenterScreen;
 
         BuildUi();
@@ -52,6 +63,7 @@ public sealed class ReceiverForm : Form
         _disconnectButton.Click += (_, _) => DisconnectByUser();
         _clearButton.Click += (_, _) => _messageList.Items.Clear();
         _chooseFolderButton.Click += (_, _) => ChooseSaveFolder();
+        _openFolderButton.Click += (_, _) => OpenSaveFolder();
 
         FormClosing += (_, _) => DisconnectSilent();
     }
@@ -74,8 +86,8 @@ public sealed class ReceiverForm : Form
 
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 62));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 38));
 
@@ -126,12 +138,13 @@ public sealed class ReceiverForm : Form
         var savePanel = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 3,
+            ColumnCount = 4,
             RowCount = 1,
         };
 
         savePanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 80));
         savePanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        savePanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
         savePanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
 
         savePanel.Controls.Add(new Label
@@ -150,12 +163,30 @@ public sealed class ReceiverForm : Form
         _chooseFolderButton.Dock = DockStyle.Fill;
         savePanel.Controls.Add(_chooseFolderButton, 2, 0);
 
+        _openFolderButton.Text = "保存先を開く";
+        _openFolderButton.Dock = DockStyle.Fill;
+        savePanel.Controls.Add(_openFolderButton, 3, 0);
+
         root.Controls.Add(savePanel, 0, 1);
+
+        var optionPanel = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+        };
+
+        _openFolderAfterReceiveCheck.Text = "受信完了後に保存先フォルダを開く";
+        _openFolderAfterReceiveCheck.AutoSize = true;
+        _openFolderAfterReceiveCheck.Checked = false;
+        optionPanel.Controls.Add(_openFolderAfterReceiveCheck);
+
+        root.Controls.Add(optionPanel, 0, 2);
 
         _statusLabel.Text = "未接続";
         _statusLabel.Dock = DockStyle.Fill;
         _statusLabel.TextAlign = ContentAlignment.MiddleLeft;
-        root.Controls.Add(_statusLabel, 0, 2);
+        root.Controls.Add(_statusLabel, 0, 3);
 
         var progressPanel = new TableLayoutPanel
         {
@@ -304,6 +335,7 @@ public sealed class ReceiverForm : Form
         finally
         {
             CloseCurrentFileSession(deleteTempFile: true);
+            ResetBatchState();
             DisconnectFromWorker();
         }
     }
@@ -316,6 +348,12 @@ public sealed class ReceiverForm : Form
                 {
                     string text = Encoding.UTF8.GetString(packet.Payload);
                     AddMessage($"メッセージ: {text}");
+                    break;
+                }
+
+            case PacketType.BatchStart:
+                {
+                    StartBatchReceive(packet.Payload);
                     break;
                 }
 
@@ -337,12 +375,49 @@ public sealed class ReceiverForm : Form
                     break;
                 }
 
+            case PacketType.TransferCancel:
+                {
+                    HandleTransferCancel(packet.Payload);
+                    break;
+                }
+
+            case PacketType.BatchEnd:
+                {
+                    FinishBatchReceive();
+                    break;
+                }
+
             default:
                 {
                     AddLog($"未知のパケット種別: {packet.Type}");
                     break;
                 }
         }
+    }
+
+    private void StartBatchReceive(byte[] payload)
+    {
+        CloseCurrentFileSession(deleteTempFile: true);
+        ResetBatchState();
+
+        BatchStartInfo? info = JsonSerializer.Deserialize<BatchStartInfo>(payload);
+
+        if (info is null || info.FileCount < 0 || info.TotalSize < 0)
+        {
+            AddLog("一括受信開始情報が不正です。");
+            return;
+        }
+
+        _batchActive = true;
+        _batchExpectedFiles = info.FileCount;
+        _batchExpectedBytes = info.TotalSize;
+        _batchReceivedFiles = 0;
+        _batchReceivedBytes = 0;
+
+        _batchStopwatch.Restart();
+
+        UpdateProgress(0, Math.Max(_batchExpectedBytes, 1), $"一括受信開始: {_batchExpectedFiles} 件 / {FormatBytes(_batchExpectedBytes)}");
+        AddLog($"一括受信開始: {_batchExpectedFiles} 件 / {FormatBytes(_batchExpectedBytes)}");
     }
 
     private void StartFileReceive(byte[] payload)
@@ -360,8 +435,15 @@ public sealed class ReceiverForm : Form
         string saveFolder = GetSaveFolder();
         Directory.CreateDirectory(saveFolder);
 
-        string safeFileName = SanitizeFileName(Path.GetFileName(info.FileName));
-        string finalPath = CreateUniqueFilePath(saveFolder, safeFileName);
+        string safeRelativePath = SanitizeRelativePath(info.FileName);
+        string finalPath = CreateUniqueFilePath(saveFolder, safeRelativePath);
+        string? finalDirectory = Path.GetDirectoryName(finalPath);
+
+        if (!string.IsNullOrWhiteSpace(finalDirectory))
+        {
+            Directory.CreateDirectory(finalDirectory);
+        }
+
         string tempPath = finalPath + ".part";
 
         var stream = new FileStream(
@@ -374,15 +456,19 @@ public sealed class ReceiverForm : Form
 
         _fileSession = new FileReceiveSession
         {
-            FileName = safeFileName,
+            FileName = safeRelativePath,
             FileSize = info.FileSize,
             FinalPath = finalPath,
             TempPath = tempPath,
             Stream = stream,
         };
 
-        UpdateProgress(0, Math.Max(info.FileSize, 1), $"受信開始: {safeFileName}");
-        AddLog($"ファイル受信開始: {safeFileName} / {FormatBytes(info.FileSize)}");
+        UpdateProgress(
+            _batchReceivedBytes,
+            Math.Max(_batchExpectedBytes > 0 ? _batchExpectedBytes : info.FileSize, 1),
+            $"受信開始: {safeRelativePath}");
+
+        AddLog($"ファイル受信開始: {safeRelativePath} / {FormatBytes(info.FileSize)}");
     }
 
     private async Task WriteFileChunkAsync(byte[] payload)
@@ -404,10 +490,27 @@ public sealed class ReceiverForm : Form
             return;
         }
 
+        long displayCurrent;
+        long displayTotal;
+
+        if (_batchActive)
+        {
+            displayCurrent = _batchReceivedBytes + _fileSession.ReceivedBytes;
+            displayTotal = Math.Max(_batchExpectedBytes, 1);
+        }
+        else
+        {
+            displayCurrent = _fileSession.ReceivedBytes;
+            displayTotal = Math.Max(_fileSession.FileSize, 1);
+        }
+
+        double seconds = Math.Max(_batchStopwatch.Elapsed.TotalSeconds, 0.001);
+        long speed = (long)(displayCurrent / seconds);
+
         UpdateProgress(
-            _fileSession.ReceivedBytes,
-            Math.Max(_fileSession.FileSize, 1),
-            $"受信中: {_fileSession.FileName} / {FormatBytes(_fileSession.ReceivedBytes)} / {FormatBytes(_fileSession.FileSize)}");
+            displayCurrent,
+            displayTotal,
+            $"受信中: {_fileSession.FileName} / {FormatBytes(displayCurrent)} / {FormatBytes(displayTotal)} / {FormatBytes(speed)}/s");
     }
 
     private void FinishFileReceive()
@@ -447,15 +550,68 @@ public sealed class ReceiverForm : Form
 
             File.Move(tempPath, finalPath);
 
+            _batchReceivedFiles++;
+            _batchReceivedBytes += receivedBytes;
+
             AddMessage($"ファイル受信完了: {fileName}");
             AddLog($"保存完了: {finalPath}");
-            UpdateProgress(1000, 1000, $"受信完了: {fileName}");
+
+            long displayTotal = _batchActive ? Math.Max(_batchExpectedBytes, 1) : Math.Max(fileSize, 1);
+            long displayCurrent = _batchActive ? _batchReceivedBytes : receivedBytes;
+
+            UpdateProgress(displayCurrent, displayTotal, $"受信完了: {fileName}");
         }
         finally
         {
             _fileSession.Dispose();
             _fileSession = null;
         }
+    }
+
+    private void FinishBatchReceive()
+    {
+        CloseCurrentFileSession(deleteTempFile: true);
+
+        _batchStopwatch.Stop();
+
+        AddMessage($"一括受信完了: {_batchReceivedFiles}/{_batchExpectedFiles} 件");
+        AddLog($"一括受信完了: {_batchReceivedFiles}/{_batchExpectedFiles} 件 / {FormatBytes(_batchReceivedBytes)}");
+
+        UpdateProgress(1000, 1000, $"一括受信完了: {_batchReceivedFiles}/{_batchExpectedFiles} 件");
+
+        bool shouldOpen = GetOpenFolderAfterReceive();
+
+        ResetBatchState();
+
+        if (shouldOpen)
+        {
+            OpenSaveFolder();
+        }
+    }
+
+    private void HandleTransferCancel(byte[] payload)
+    {
+        string reason = "送信側でキャンセルされました。";
+
+        try
+        {
+            TransferCancelInfo? info = JsonSerializer.Deserialize<TransferCancelInfo>(payload);
+
+            if (info is not null && !string.IsNullOrWhiteSpace(info.Reason))
+            {
+                reason = info.Reason;
+            }
+        }
+        catch
+        {
+        }
+
+        CloseCurrentFileSession(deleteTempFile: true);
+        ResetBatchState();
+
+        UpdateProgress(0, 1, "受信キャンセル");
+        AddLog($"受信キャンセル: {reason}");
+        AddMessage($"受信キャンセル: {reason}");
     }
 
     private void CloseCurrentFileSession(bool deleteTempFile)
@@ -492,6 +648,17 @@ public sealed class ReceiverForm : Form
         _fileSession = null;
     }
 
+    private void ResetBatchState()
+    {
+        _batchStopwatch.Reset();
+
+        _batchActive = false;
+        _batchExpectedFiles = 0;
+        _batchReceivedFiles = 0;
+        _batchExpectedBytes = 0;
+        _batchReceivedBytes = 0;
+    }
+
     private void ChooseSaveFolder()
     {
         using var dialog = new FolderBrowserDialog
@@ -526,7 +693,37 @@ public sealed class ReceiverForm : Form
             _saveFolderBox.Text = folder;
         }
 
+        Directory.CreateDirectory(folder);
         return folder;
+    }
+
+    private bool GetOpenFolderAfterReceive()
+    {
+        if (InvokeRequired)
+        {
+            return (bool)Invoke(new Func<bool>(GetOpenFolderAfterReceive));
+        }
+
+        return _openFolderAfterReceiveCheck.Checked;
+    }
+
+    private void OpenSaveFolder()
+    {
+        try
+        {
+            string folder = GetSaveFolder();
+            Directory.CreateDirectory(folder);
+
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = folder,
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            AddLog($"保存先を開けませんでした: {ex.Message}");
+        }
     }
 
     private void DisconnectByUser()
@@ -550,6 +747,7 @@ public sealed class ReceiverForm : Form
         finally
         {
             CloseCurrentFileSession(deleteTempFile: true);
+            ResetBatchState();
 
             _cts = null;
             _client = null;
@@ -651,11 +849,35 @@ public sealed class ReceiverForm : Form
         _logList.Items.Insert(0, $"[{DateTime.Now:HH:mm:ss}] {message}");
     }
 
+    private static string SanitizeRelativePath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return "received_file";
+        }
+
+        string normalized = path.Replace('\\', '/');
+
+        string[] parts = normalized
+            .Split('/', StringSplitOptions.RemoveEmptyEntries)
+            .Where(x => x != "." && x != "..")
+            .Select(SanitizeFileName)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .ToArray();
+
+        if (parts.Length == 0)
+        {
+            return "received_file";
+        }
+
+        return Path.Combine(parts);
+    }
+
     private static string SanitizeFileName(string fileName)
     {
         if (string.IsNullOrWhiteSpace(fileName))
         {
-            return "received_file";
+            return "unnamed";
         }
 
         foreach (char c in Path.GetInvalidFileNameChars())
@@ -666,19 +888,29 @@ public sealed class ReceiverForm : Form
         return fileName;
     }
 
-    private static string CreateUniqueFilePath(string folder, string fileName)
+    private static string CreateUniqueFilePath(string rootFolder, string relativePath)
     {
+        string fullPath = Path.Combine(rootFolder, relativePath);
+
+        string? directory = Path.GetDirectoryName(fullPath);
+        string fileName = Path.GetFileName(fullPath);
+
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            directory = rootFolder;
+        }
+
         string baseName = Path.GetFileNameWithoutExtension(fileName);
         string extension = Path.GetExtension(fileName);
 
-        string path = Path.Combine(folder, fileName);
+        string path = Path.Combine(directory, fileName);
 
         int index = 1;
 
         while (File.Exists(path) || File.Exists(path + ".part"))
         {
             string newFileName = $"{baseName} ({index}){extension}";
-            path = Path.Combine(folder, newFileName);
+            path = Path.Combine(directory, newFileName);
             index++;
         }
 
@@ -721,6 +953,13 @@ public sealed class FileReceiveSession : IDisposable
     }
 }
 
+public sealed class BatchStartInfo
+{
+    public int FileCount { get; set; }
+
+    public long TotalSize { get; set; }
+}
+
 public sealed class FileStartInfo
 {
     public string FileName { get; set; } = "";
@@ -728,15 +967,25 @@ public sealed class FileStartInfo
     public long FileSize { get; set; }
 }
 
+public sealed class TransferCancelInfo
+{
+    public string Reason { get; set; } = "";
+}
+
 public static class PacketType
 {
     public const byte TextMessage = 1;
+
     public const byte FileStart = 2;
     public const byte FileChunk = 3;
     public const byte FileEnd = 4;
 
     public const byte ScreenFrame = 5;
     public const byte WebOpen = 6;
+
+    public const byte TransferCancel = 7;
+    public const byte BatchStart = 8;
+    public const byte BatchEnd = 9;
 }
 
 public sealed class ReceivedPacket
