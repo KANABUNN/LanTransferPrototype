@@ -1,5 +1,6 @@
-﻿using System.Buffers.Binary;
+using System.Buffers.Binary;
 using System.Diagnostics;
+using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Net;
 using System.Net.Sockets;
@@ -21,6 +22,8 @@ internal static class Program
 public sealed class SenderForm : Form
 {
     private const int FileChunkSize = 64 * 1024;
+    private const int ScreenMaxWidth = 1280;
+    private const long ScreenJpegQuality = 65L;
 
     private readonly TextBox _portBox = new();
     private readonly TextBox _messageBox = new();
@@ -36,15 +39,8 @@ public sealed class SenderForm : Form
     private readonly Button _sendFileAllButton = new();
     private readonly Button _sendFileSelectedButton = new();
     private readonly Button _cancelTransferButton = new();
-
-    private readonly Button _sendScreenOnceAllButton = new();
-    private readonly Button _sendScreenOnceSelectedButton = new();
-    private readonly Button _startScreenAllButton = new();
-    private readonly Button _startScreenSelectedButton = new();
-    private readonly Button _stopScreenButton = new();
-    private readonly NumericUpDown _screenIntervalBox = new();
-    private readonly NumericUpDown _screenQualityBox = new();
-    private readonly Label _screenStatusLabel = new();
+    private readonly Button _sendScreenAllButton = new();
+    private readonly Button _sendScreenSelectedButton = new();
 
     private readonly ProgressBar _progressBar = new();
     private readonly Label _progressLabel = new();
@@ -59,18 +55,15 @@ public sealed class SenderForm : Form
     private TcpListener? _listener;
     private CancellationTokenSource? _serverCts;
     private CancellationTokenSource? _transferCts;
-    private CancellationTokenSource? _screenStreamCts;
 
     private Task? _acceptTask;
     private bool _isSendingFile;
-    private bool _isStreamingScreen;
-    private long _screenFrameNo;
 
     public SenderForm()
     {
-        Text = "LAN Sender - Step 6 Screen Monitor";
-        Width = 1160;
-        Height = 820;
+        Text = "LAN Sender - Step 4 Multi File Transfer";
+        Width = 1100;
+        Height = 760;
         StartPosition = FormStartPosition.CenterScreen;
 
         BuildUi();
@@ -88,12 +81,8 @@ public sealed class SenderForm : Form
         _sendFileAllButton.Click += async (_, _) => await SendFilesToAllAsync();
         _sendFileSelectedButton.Click += async (_, _) => await SendFilesToSelectedAsync();
         _cancelTransferButton.Click += (_, _) => CancelTransfer();
-
-        _sendScreenOnceAllButton.Click += async (_, _) => await SendScreenOnceToAllAsync();
-        _sendScreenOnceSelectedButton.Click += async (_, _) => await SendScreenOnceToSelectedAsync();
-        _startScreenAllButton.Click += async (_, _) => await StartScreenStreamAsync(selectedOnly: false);
-        _startScreenSelectedButton.Click += async (_, _) => await StartScreenStreamAsync(selectedOnly: true);
-        _stopScreenButton.Click += (_, _) => StopScreenStream();
+        _sendScreenAllButton.Click += async (_, _) => await SendScreenshotToAllAsync();
+        _sendScreenSelectedButton.Click += async (_, _) => await SendScreenshotToSelectedAsync();
 
         FormClosing += (_, _) => StopServer();
     }
@@ -103,20 +92,19 @@ public sealed class SenderForm : Form
         var root = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            RowCount = 6,
+            RowCount = 5,
             ColumnCount = 2,
             Padding = new Padding(12),
         };
 
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 34));
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 66));
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 36));
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 64));
 
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 105));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 35));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 155));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 65));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 110));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 48));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 52));
 
         var serverPanel = new FlowLayoutPanel
         {
@@ -127,7 +115,7 @@ public sealed class SenderForm : Form
 
         serverPanel.Controls.Add(new Label
         {
-            Text = "Port:",
+            Text = "待受ポート:",
             AutoSize = true,
             Padding = new Padding(0, 8, 0, 0),
         });
@@ -136,11 +124,11 @@ public sealed class SenderForm : Form
         _portBox.Width = 100;
         serverPanel.Controls.Add(_portBox);
 
-        _startButton.Text = "Start";
+        _startButton.Text = "開始";
         _startButton.Width = 90;
         serverPanel.Controls.Add(_startButton);
 
-        _stopButton.Text = "Stop";
+        _stopButton.Text = "停止";
         _stopButton.Width = 90;
         _stopButton.Enabled = false;
         serverPanel.Controls.Add(_stopButton);
@@ -150,7 +138,7 @@ public sealed class SenderForm : Form
 
         var clientGroup = new GroupBox
         {
-            Text = "Connected clients",
+            Text = "接続中クライアント",
             Dock = DockStyle.Fill,
         };
 
@@ -158,18 +146,18 @@ public sealed class SenderForm : Form
         clientGroup.Controls.Add(_clientList);
 
         root.Controls.Add(clientGroup, 0, 1);
-        root.SetRowSpan(clientGroup, 5);
+        root.SetRowSpan(clientGroup, 4);
 
         var messageGroup = new GroupBox
         {
-            Text = "Text message",
+            Text = "送信メッセージ",
             Dock = DockStyle.Fill,
         };
 
         _messageBox.Multiline = true;
         _messageBox.Dock = DockStyle.Fill;
         _messageBox.ScrollBars = ScrollBars.Vertical;
-        _messageBox.Text = "Test message";
+        _messageBox.Text = "テストメッセージ";
 
         messageGroup.Controls.Add(_messageBox);
         root.Controls.Add(messageGroup, 1, 1);
@@ -181,12 +169,12 @@ public sealed class SenderForm : Form
             WrapContents = false,
         };
 
-        _sendAllButton.Text = "Send to all";
+        _sendAllButton.Text = "全員へ送信";
         _sendAllButton.Width = 130;
         _sendAllButton.Enabled = false;
         sendPanel.Controls.Add(_sendAllButton);
 
-        _sendSelectedButton.Text = "Send selected";
+        _sendSelectedButton.Text = "選択先へ送信";
         _sendSelectedButton.Width = 130;
         _sendSelectedButton.Enabled = false;
         sendPanel.Controls.Add(_sendSelectedButton);
@@ -195,7 +183,7 @@ public sealed class SenderForm : Form
 
         var fileGroup = new GroupBox
         {
-            Text = "File / folder transfer",
+            Text = "ファイル・フォルダ・画面送信",
             Dock = DockStyle.Fill,
         };
 
@@ -220,15 +208,15 @@ public sealed class SenderForm : Form
             WrapContents = false,
         };
 
-        _addFilesButton.Text = "Add files";
+        _addFilesButton.Text = "ファイル追加";
         _addFilesButton.Width = 120;
         fileAddPanel.Controls.Add(_addFilesButton);
 
-        _addFolderButton.Text = "Add folder";
+        _addFolderButton.Text = "フォルダ追加";
         _addFolderButton.Width = 120;
         fileAddPanel.Controls.Add(_addFolderButton);
 
-        _clearFilesButton.Text = "Clear list";
+        _clearFilesButton.Text = "一覧クリア";
         _clearFilesButton.Width = 120;
         fileAddPanel.Controls.Add(_clearFilesButton);
 
@@ -244,20 +232,30 @@ public sealed class SenderForm : Form
             WrapContents = false,
         };
 
-        _sendFileAllButton.Text = "Send files to all";
-        _sendFileAllButton.Width = 140;
+        _sendFileAllButton.Text = "全員へ送信";
+        _sendFileAllButton.Width = 130;
         _sendFileAllButton.Enabled = false;
         fileSendPanel.Controls.Add(_sendFileAllButton);
 
-        _sendFileSelectedButton.Text = "Send files selected";
-        _sendFileSelectedButton.Width = 155;
+        _sendFileSelectedButton.Text = "選択先へ送信";
+        _sendFileSelectedButton.Width = 140;
         _sendFileSelectedButton.Enabled = false;
         fileSendPanel.Controls.Add(_sendFileSelectedButton);
 
-        _cancelTransferButton.Text = "Cancel";
-        _cancelTransferButton.Width = 100;
+        _cancelTransferButton.Text = "キャンセル";
+        _cancelTransferButton.Width = 120;
         _cancelTransferButton.Enabled = false;
         fileSendPanel.Controls.Add(_cancelTransferButton);
+
+        _sendScreenAllButton.Text = "画面1枚を全員へ";
+        _sendScreenAllButton.Width = 150;
+        _sendScreenAllButton.Enabled = false;
+        fileSendPanel.Controls.Add(_sendScreenAllButton);
+
+        _sendScreenSelectedButton.Text = "画面1枚を選択先へ";
+        _sendScreenSelectedButton.Width = 170;
+        _sendScreenSelectedButton.Enabled = false;
+        fileSendPanel.Controls.Add(_sendScreenSelectedButton);
 
         fileLayout.Controls.Add(fileSendPanel, 0, 2);
 
@@ -266,7 +264,7 @@ public sealed class SenderForm : Form
         _progressBar.Maximum = 1000;
         fileLayout.Controls.Add(_progressBar, 0, 3);
 
-        _progressLabel.Text = "Idle";
+        _progressLabel.Text = "待機中";
         _progressLabel.Dock = DockStyle.Fill;
         _progressLabel.TextAlign = ContentAlignment.MiddleLeft;
         fileLayout.Controls.Add(_progressLabel, 0, 4);
@@ -274,123 +272,16 @@ public sealed class SenderForm : Form
         fileGroup.Controls.Add(fileLayout);
         root.Controls.Add(fileGroup, 1, 3);
 
-        var screenGroup = new GroupBox
-        {
-            Text = "Screen monitor",
-            Dock = DockStyle.Fill,
-        };
-
-        var screenLayout = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            RowCount = 4,
-            ColumnCount = 1,
-            Padding = new Padding(8),
-        };
-
-        screenLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
-        screenLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
-        screenLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
-        screenLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-
-        var screenOptionsPanel = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = false,
-        };
-
-        screenOptionsPanel.Controls.Add(new Label
-        {
-            Text = "Interval(ms):",
-            AutoSize = true,
-            Padding = new Padding(0, 6, 0, 0),
-        });
-
-        _screenIntervalBox.Minimum = 100;
-        _screenIntervalBox.Maximum = 5000;
-        _screenIntervalBox.Increment = 100;
-        _screenIntervalBox.Value = 500;
-        _screenIntervalBox.Width = 80;
-        screenOptionsPanel.Controls.Add(_screenIntervalBox);
-
-        screenOptionsPanel.Controls.Add(new Label
-        {
-            Text = "JPEG quality:",
-            AutoSize = true,
-            Padding = new Padding(12, 6, 0, 0),
-        });
-
-        _screenQualityBox.Minimum = 20;
-        _screenQualityBox.Maximum = 95;
-        _screenQualityBox.Increment = 5;
-        _screenQualityBox.Value = 55;
-        _screenQualityBox.Width = 70;
-        screenOptionsPanel.Controls.Add(_screenQualityBox);
-
-        screenLayout.Controls.Add(screenOptionsPanel, 0, 0);
-
-        var screenOncePanel = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = false,
-        };
-
-        _sendScreenOnceAllButton.Text = "Send 1 frame to all";
-        _sendScreenOnceAllButton.Width = 155;
-        _sendScreenOnceAllButton.Enabled = false;
-        screenOncePanel.Controls.Add(_sendScreenOnceAllButton);
-
-        _sendScreenOnceSelectedButton.Text = "Send 1 frame selected";
-        _sendScreenOnceSelectedButton.Width = 170;
-        _sendScreenOnceSelectedButton.Enabled = false;
-        screenOncePanel.Controls.Add(_sendScreenOnceSelectedButton);
-
-        screenLayout.Controls.Add(screenOncePanel, 0, 1);
-
-        var screenStreamPanel = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = false,
-        };
-
-        _startScreenAllButton.Text = "Start monitor all";
-        _startScreenAllButton.Width = 150;
-        _startScreenAllButton.Enabled = false;
-        screenStreamPanel.Controls.Add(_startScreenAllButton);
-
-        _startScreenSelectedButton.Text = "Start monitor selected";
-        _startScreenSelectedButton.Width = 175;
-        _startScreenSelectedButton.Enabled = false;
-        screenStreamPanel.Controls.Add(_startScreenSelectedButton);
-
-        _stopScreenButton.Text = "Stop monitor";
-        _stopScreenButton.Width = 130;
-        _stopScreenButton.Enabled = false;
-        screenStreamPanel.Controls.Add(_stopScreenButton);
-
-        screenLayout.Controls.Add(screenStreamPanel, 0, 2);
-
-        _screenStatusLabel.Text = "Screen monitor idle";
-        _screenStatusLabel.Dock = DockStyle.Fill;
-        _screenStatusLabel.TextAlign = ContentAlignment.MiddleLeft;
-        screenLayout.Controls.Add(_screenStatusLabel, 0, 3);
-
-        screenGroup.Controls.Add(screenLayout);
-        root.Controls.Add(screenGroup, 1, 4);
-
         var logGroup = new GroupBox
         {
-            Text = "Log",
+            Text = "ログ",
             Dock = DockStyle.Fill,
         };
 
         _logList.Dock = DockStyle.Fill;
         logGroup.Controls.Add(_logList);
 
-        root.Controls.Add(logGroup, 1, 5);
+        root.Controls.Add(logGroup, 1, 4);
 
         Controls.Add(root);
     }
@@ -399,13 +290,13 @@ public sealed class SenderForm : Form
     {
         if (_serverCts is not null)
         {
-            AddLog("Server is already running.");
+            AddLog("すでにサーバーは起動しています。");
             return;
         }
 
         if (!int.TryParse(_portBox.Text, out int port) || port < 1 || port > 65535)
         {
-            AddLog("Invalid port number.");
+            AddLog("ポート番号が不正です。");
             return;
         }
 
@@ -422,11 +313,11 @@ public sealed class SenderForm : Form
             _stopButton.Enabled = true;
             SetSendButtonsEnabled(true);
 
-            AddLog($"Listening on 0.0.0.0:{port}");
+            AddLog($"待受開始: 0.0.0.0:{port}");
         }
         catch (Exception ex)
         {
-            AddLog($"Failed to start server: {ex.Message}");
+            AddLog($"待受開始失敗: {ex.Message}");
             StopServer();
         }
     }
@@ -450,7 +341,7 @@ public sealed class SenderForm : Form
                 }
 
                 AddClientToList(connection);
-                AddLog($"Client connected: {connection.DisplayName}");
+                AddLog($"クライアント接続: {connection.DisplayName}");
 
                 _ = Task.Run(() => MonitorClientAsync(connection, token));
             }
@@ -468,7 +359,7 @@ public sealed class SenderForm : Form
             }
             catch (Exception ex)
             {
-                AddLog($"Accept error: {ex.Message}");
+                AddLog($"接続受付エラー: {ex.Message}");
             }
         }
     }
@@ -486,11 +377,11 @@ public sealed class SenderForm : Form
 
                 if (read == 0)
                 {
-                    AddLog($"Client disconnected: {connection.DisplayName}");
+                    AddLog($"クライアント切断: {connection.DisplayName}");
                     break;
                 }
 
-                AddLog($"Unexpected inbound data was ignored: {connection.DisplayName}");
+                AddLog($"想定外の受信データを破棄: {connection.DisplayName}");
             }
         }
         catch (OperationCanceledException)
@@ -501,15 +392,15 @@ public sealed class SenderForm : Form
         }
         catch (IOException)
         {
-            AddLog($"Client communication ended: {connection.DisplayName}");
+            AddLog($"クライアント通信終了: {connection.DisplayName}");
         }
         catch (SocketException)
         {
-            AddLog($"Client communication ended: {connection.DisplayName}");
+            AddLog($"クライアント通信終了: {connection.DisplayName}");
         }
         catch (Exception ex)
         {
-            AddLog($"Client monitor error: {connection.DisplayName} / {ex.Message}");
+            AddLog($"クライアント監視エラー: {connection.DisplayName} / {ex.Message}");
         }
         finally
         {
@@ -523,15 +414,20 @@ public sealed class SenderForm : Form
 
         if (string.IsNullOrWhiteSpace(text))
         {
-            AddLog("Message is empty.");
+            AddLog("送信するメッセージが空です。");
             return;
         }
 
-        List<ClientConnection> snapshot = GetClientSnapshot();
+        List<ClientConnection> snapshot;
+
+        lock (_clients)
+        {
+            snapshot = _clients.ToList();
+        }
 
         if (snapshot.Count == 0)
         {
-            AddLog("No connected clients.");
+            AddLog("接続中のクライアントがありません。");
             return;
         }
 
@@ -547,14 +443,14 @@ public sealed class SenderForm : Form
             }
         }
 
-        AddLog($"Text sent: {successCount}/{snapshot.Count}");
+        AddLog($"全体送信完了: {successCount}/{snapshot.Count} 台");
     }
 
     private async Task SendMessageToSelectedAsync()
     {
         if (_clientList.SelectedItem is not ClientConnection connection)
         {
-            AddLog("Select a client first.");
+            AddLog("送信先クライアントを選択してください。");
             return;
         }
 
@@ -562,7 +458,7 @@ public sealed class SenderForm : Form
 
         if (string.IsNullOrWhiteSpace(text))
         {
-            AddLog("Message is empty.");
+            AddLog("送信するメッセージが空です。");
             return;
         }
 
@@ -570,7 +466,7 @@ public sealed class SenderForm : Form
 
         if (ok)
         {
-            AddLog($"Text sent to selected client: {connection.DisplayName}");
+            AddLog($"選択先へ送信完了: {connection.DisplayName}");
         }
     }
 
@@ -596,7 +492,7 @@ public sealed class SenderForm : Form
         }
         catch (Exception ex)
         {
-            AddLog($"Text send failed: {connection.DisplayName} / {ex.Message}");
+            AddLog($"送信失敗: {connection.DisplayName} / {ex.Message}");
             RemoveClient(connection);
             return false;
         }
@@ -606,7 +502,7 @@ public sealed class SenderForm : Form
     {
         using var dialog = new OpenFileDialog
         {
-            Title = "Select files to send",
+            Title = "送信するファイルを選択",
             CheckFileExists = true,
             Multiselect = true,
         };
@@ -626,14 +522,14 @@ public sealed class SenderForm : Form
             }
         }
 
-        AddLog($"Files added: {added}");
+        AddLog($"ファイル追加: {added} 件");
     }
 
     private void AddFolder()
     {
         using var dialog = new FolderBrowserDialog
         {
-            Description = "Select a folder to send",
+            Description = "送信するフォルダを選択してください",
             UseDescriptionForTitle = true,
         };
 
@@ -658,7 +554,7 @@ public sealed class SenderForm : Form
             }
         }
 
-        AddLog($"Folder added: {rootFolder} / {added}");
+        AddLog($"フォルダ追加: {rootFolder} / {added} 件");
     }
 
     private bool TryAddTransferItem(string fullPath, string relativePath)
@@ -697,7 +593,7 @@ public sealed class SenderForm : Form
     {
         if (_isSendingFile)
         {
-            AddLog("Cannot clear the list while transferring files.");
+            AddLog("送信中は一覧をクリアできません。");
             return;
         }
 
@@ -707,20 +603,27 @@ public sealed class SenderForm : Form
         }
 
         _fileList.Items.Clear();
-        UpdateProgress(0, 1, "Idle");
-        AddLog("Transfer list cleared.");
+        UpdateProgress(0, 1, "待機中");
+        AddLog("送信ファイル一覧をクリアしました。");
     }
 
     private async Task SendFilesToAllAsync()
     {
-        await SendFilesToTargetsAsync(GetClientSnapshot());
+        List<ClientConnection> snapshot;
+
+        lock (_clients)
+        {
+            snapshot = _clients.ToList();
+        }
+
+        await SendFilesToTargetsAsync(snapshot);
     }
 
     private async Task SendFilesToSelectedAsync()
     {
         if (_clientList.SelectedItem is not ClientConnection connection)
         {
-            AddLog("Select a client first.");
+            AddLog("送信先クライアントを選択してください。");
             return;
         }
 
@@ -731,13 +634,7 @@ public sealed class SenderForm : Form
     {
         if (_isSendingFile)
         {
-            AddLog("File transfer is already running.");
-            return;
-        }
-
-        if (_isStreamingScreen)
-        {
-            AddLog("Stop screen monitor before file transfer.");
+            AddLog("すでにファイル送信中です。");
             return;
         }
 
@@ -750,13 +647,13 @@ public sealed class SenderForm : Form
 
         if (items.Count == 0)
         {
-            AddLog("Add files first.");
+            AddLog("送信するファイルを追加してください。");
             return;
         }
 
         if (targets.Count == 0)
         {
-            AddLog("No connected clients.");
+            AddLog("接続中のクライアントがありません。");
             return;
         }
 
@@ -764,7 +661,7 @@ public sealed class SenderForm : Form
 
         if (items.Count == 0)
         {
-            AddLog("No existing files to send.");
+            AddLog("送信可能なファイルがありません。");
             return;
         }
 
@@ -784,7 +681,7 @@ public sealed class SenderForm : Form
 
         var stopwatch = Stopwatch.StartNew();
 
-        UpdateProgress(0, Math.Max(totalBytes, 1), "Preparing file transfer");
+        UpdateProgress(0, Math.Max(totalBytes, 1), "送信準備中");
 
         try
         {
@@ -809,7 +706,7 @@ public sealed class SenderForm : Form
                         UpdateProgress(
                             totalSentBytes,
                             Math.Max(totalBytes, 1),
-                            $"Sending: {FormatBytes(totalSentBytes)} / {FormatBytes(totalBytes)} / {FormatBytes(speed)}/s");
+                            $"送信中: {FormatBytes(totalSentBytes)} / {FormatBytes(totalBytes)} / {FormatBytes(speed)}/s");
                     });
 
                 switch (result)
@@ -830,13 +727,13 @@ public sealed class SenderForm : Form
 
             if (_transferCts.IsCancellationRequested)
             {
-                UpdateProgress(totalSentBytes, Math.Max(totalBytes, 1), "File transfer canceled");
-                AddLog($"File transfer canceled: success {successClients}, failed {failedClients}");
+                UpdateProgress(totalSentBytes, Math.Max(totalBytes, 1), "送信キャンセル済み");
+                AddLog($"送信キャンセル: 成功 {successClients} 台 / 失敗 {failedClients} 台");
             }
             else
             {
-                UpdateProgress(1000, 1000, $"File transfer done: success {successClients}, failed {failedClients}");
-                AddLog($"File transfer done: success {successClients}, failed {failedClients}, canceled {canceledClients}");
+                UpdateProgress(1000, 1000, $"送信完了: 成功 {successClients} 台 / 失敗 {failedClients} 台");
+                AddLog($"送信完了: 成功 {successClients} 台 / 失敗 {failedClients} 台 / キャンセル {canceledClients} 台");
             }
         }
         finally
@@ -929,12 +826,12 @@ public sealed class SenderForm : Form
 
             await NetPacket.WriteAsync(stream, PacketType.BatchEnd, Array.Empty<byte>(), token);
 
-            AddLog($"Files sent: {connection.DisplayName} / {items.Count}");
+            AddLog($"ファイル送信成功: {connection.DisplayName} / {items.Count} 件");
             return TransferResult.Success;
         }
         catch (OperationCanceledException)
         {
-            AddLog($"File transfer canceled: {connection.DisplayName}");
+            AddLog($"ファイル送信キャンセル: {connection.DisplayName}");
 
             try
             {
@@ -944,7 +841,7 @@ public sealed class SenderForm : Form
 
                     var cancelInfo = new TransferCancelInfo
                     {
-                        Reason = "Canceled by sender.",
+                        Reason = "送信側でキャンセルされました。",
                     };
 
                     await NetPacket.WriteAsync(
@@ -962,7 +859,7 @@ public sealed class SenderForm : Form
         }
         catch (Exception ex)
         {
-            AddLog($"File transfer failed: {connection.DisplayName} / {ex.Message}");
+            AddLog($"ファイル送信失敗: {connection.DisplayName} / {ex.Message}");
             RemoveClient(connection);
             return TransferResult.Failed;
         }
@@ -981,6 +878,163 @@ public sealed class SenderForm : Form
         }
     }
 
+    private async Task SendScreenshotToAllAsync()
+    {
+        List<ClientConnection> snapshot;
+
+        lock (_clients)
+        {
+            snapshot = _clients.ToList();
+        }
+
+        await SendScreenshotToTargetsAsync(snapshot);
+    }
+
+    private async Task SendScreenshotToSelectedAsync()
+    {
+        if (_clientList.SelectedItem is not ClientConnection connection)
+        {
+            AddLog("送信先クライアントを選択してください。");
+            return;
+        }
+
+        await SendScreenshotToTargetsAsync(new List<ClientConnection> { connection });
+    }
+
+    private async Task SendScreenshotToTargetsAsync(List<ClientConnection> targets)
+    {
+        if (_isSendingFile)
+        {
+            AddLog("ファイル送信中は画面送信できません。");
+            return;
+        }
+
+        if (targets.Count == 0)
+        {
+            AddLog("接続中のクライアントがありません。");
+            return;
+        }
+
+        ScreenFrameInfo frameInfo;
+
+        try
+        {
+            frameInfo = CapturePrimaryScreenAsFrame();
+        }
+        catch (Exception ex)
+        {
+            AddLog($"画面キャプチャ失敗: {ex.Message}");
+            return;
+        }
+
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(frameInfo);
+        int successCount = 0;
+
+        foreach (var connection in targets)
+        {
+            bool ok = await SendScreenFrameToClientAsync(connection, payload);
+
+            if (ok)
+            {
+                successCount++;
+            }
+        }
+
+        AddLog($"画面1枚送信完了: {successCount}/{targets.Count} 台 / {frameInfo.Width}x{frameInfo.Height} / {FormatBytes(payload.Length)}");
+    }
+
+    private async Task<bool> SendScreenFrameToClientAsync(ClientConnection connection, byte[] payload)
+    {
+        try
+        {
+            await connection.WriteLock.WaitAsync();
+
+            try
+            {
+                NetworkStream stream = connection.Client.GetStream();
+                await NetPacket.WriteAsync(stream, PacketType.ScreenFrame, payload, CancellationToken.None);
+            }
+            finally
+            {
+                connection.WriteLock.Release();
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            AddLog($"画面送信失敗: {connection.DisplayName} / {ex.Message}");
+            RemoveClient(connection);
+            return false;
+        }
+    }
+
+    private static ScreenFrameInfo CapturePrimaryScreenAsFrame()
+    {
+        Screen? screen = Screen.PrimaryScreen;
+
+        if (screen is null)
+        {
+            throw new InvalidOperationException("プライマリ画面を取得できません。");
+        }
+
+        Rectangle bounds = screen.Bounds;
+
+        using var original = new Bitmap(bounds.Width, bounds.Height);
+
+        using (Graphics graphics = Graphics.FromImage(original))
+        {
+            graphics.CopyFromScreen(bounds.Left, bounds.Top, 0, 0, bounds.Size);
+        }
+
+        using Bitmap resized = ResizeBitmap(original, ScreenMaxWidth);
+        using var memory = new MemoryStream();
+
+        ImageCodecInfo jpegCodec = GetJpegCodec();
+
+        using var encoderParameters = new EncoderParameters(1);
+        encoderParameters.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, ScreenJpegQuality);
+
+        resized.Save(memory, jpegCodec, encoderParameters);
+
+        return new ScreenFrameInfo
+        {
+            ImageFormat = "jpeg",
+            Width = resized.Width,
+            Height = resized.Height,
+            CapturedAt = DateTimeOffset.Now,
+            ImageBytes = memory.ToArray(),
+        };
+    }
+
+    private static Bitmap ResizeBitmap(Bitmap source, int maxWidth)
+    {
+        if (source.Width <= maxWidth)
+        {
+            return new Bitmap(source);
+        }
+
+        int width = maxWidth;
+        int height = Math.Max(1, (int)Math.Round(source.Height * (maxWidth / (double)source.Width)));
+
+        var resized = new Bitmap(width, height);
+
+        using Graphics graphics = Graphics.FromImage(resized);
+        graphics.CompositingQuality = CompositingQuality.HighQuality;
+        graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+        graphics.SmoothingMode = SmoothingMode.HighQuality;
+        graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+        graphics.DrawImage(source, 0, 0, width, height);
+
+        return resized;
+    }
+
+    private static ImageCodecInfo GetJpegCodec()
+    {
+        return ImageCodecInfo.GetImageEncoders()
+            .First(codec => codec.MimeType.Equals("image/jpeg", StringComparison.OrdinalIgnoreCase));
+    }
+
     private void CancelTransfer()
     {
         if (!_isSendingFile || _transferCts is null)
@@ -989,317 +1043,13 @@ public sealed class SenderForm : Form
         }
 
         _transferCts.Cancel();
-        AddLog("File transfer cancel requested.");
-    }
-
-    private async Task SendScreenOnceToAllAsync()
-    {
-        await SendScreenFrameToTargetsAsync(GetClientSnapshot(), CancellationToken.None, logResult: true);
-    }
-
-    private async Task SendScreenOnceToSelectedAsync()
-    {
-        if (_clientList.SelectedItem is not ClientConnection connection)
-        {
-            AddLog("Select a client first.");
-            return;
-        }
-
-        await SendScreenFrameToTargetsAsync(new List<ClientConnection> { connection }, CancellationToken.None, logResult: true);
-    }
-
-    private async Task StartScreenStreamAsync(bool selectedOnly)
-    {
-        if (_isStreamingScreen)
-        {
-            AddLog("Screen monitor is already running.");
-            return;
-        }
-
-        if (_isSendingFile)
-        {
-            AddLog("Wait until file transfer is done.");
-            return;
-        }
-
-        List<ClientConnection> fixedTargets;
-
-        if (selectedOnly)
-        {
-            if (_clientList.SelectedItem is not ClientConnection connection)
-            {
-                AddLog("Select a client first.");
-                return;
-            }
-
-            fixedTargets = new List<ClientConnection> { connection };
-        }
-        else
-        {
-            fixedTargets = new List<ClientConnection>();
-        }
-
-        if (!selectedOnly && GetClientSnapshot().Count == 0)
-        {
-            AddLog("No connected clients.");
-            return;
-        }
-
-        _screenStreamCts = new CancellationTokenSource();
-        _isStreamingScreen = true;
-        SetSendButtonsEnabled(_serverCts is not null);
-        UpdateScreenStatus("Screen monitor starting");
-
-        bool useFixedTargets = selectedOnly;
-        CancellationToken token = _screenStreamCts.Token;
-
-        _ = Task.Run(() => ScreenStreamLoopAsync(useFixedTargets, fixedTargets, token));
-
-        await Task.CompletedTask;
-    }
-
-    private async Task ScreenStreamLoopAsync(bool useFixedTargets, List<ClientConnection> fixedTargets, CancellationToken token)
-    {
-        var stopwatch = Stopwatch.StartNew();
-        long sentFrames = 0;
-
-        try
-        {
-            while (!token.IsCancellationRequested)
-            {
-                int intervalMs = GetScreenIntervalMs();
-                var loopStart = Stopwatch.StartNew();
-
-                List<ClientConnection> targets = useFixedTargets ? fixedTargets.ToList() : GetClientSnapshot();
-
-                if (targets.Count == 0)
-                {
-                    UpdateScreenStatus("Screen monitor stopped: no clients");
-                    break;
-                }
-
-                ScreenCaptureData capture = CaptureVirtualScreenJpeg(GetScreenQuality());
-
-                int success = 0;
-
-                foreach (ClientConnection connection in targets)
-                {
-                    token.ThrowIfCancellationRequested();
-
-                    bool ok = await SendScreenFrameToClientAsync(connection, capture, token);
-
-                    if (ok)
-                    {
-                        success++;
-                    }
-                }
-
-                sentFrames++;
-                double fps = sentFrames / Math.Max(stopwatch.Elapsed.TotalSeconds, 0.001);
-
-                UpdateScreenStatus(
-                    $"Monitoring: frame {capture.FrameNo}, {capture.Width}x{capture.Height}, {FormatBytes(capture.ImageBytes.Length)}, clients {success}/{targets.Count}, {fps:0.0} fps");
-
-                int delayMs = Math.Max(1, intervalMs - (int)loopStart.ElapsedMilliseconds);
-                await Task.Delay(delayMs, token);
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            UpdateScreenStatus("Screen monitor stopped");
-        }
-        catch (Exception ex)
-        {
-            AddLog($"Screen monitor error: {ex.Message}");
-            UpdateScreenStatus("Screen monitor error");
-        }
-        finally
-        {
-            stopwatch.Stop();
-
-            if (_screenStreamCts is not null)
-            {
-                try
-                {
-                    _screenStreamCts.Dispose();
-                }
-                catch
-                {
-                }
-            }
-
-            _screenStreamCts = null;
-            _isStreamingScreen = false;
-            SetSendButtonsEnabled(_serverCts is not null);
-        }
-    }
-
-    private void StopScreenStream()
-    {
-        if (!_isStreamingScreen || _screenStreamCts is null)
-        {
-            return;
-        }
-
-        _screenStreamCts.Cancel();
-        AddLog("Screen monitor stop requested.");
-    }
-
-    private async Task SendScreenFrameToTargetsAsync(List<ClientConnection> targets, CancellationToken token, bool logResult)
-    {
-        if (targets.Count == 0)
-        {
-            AddLog("No connected clients.");
-            return;
-        }
-
-        ScreenCaptureData capture = CaptureVirtualScreenJpeg(GetScreenQuality());
-        int success = 0;
-
-        foreach (ClientConnection connection in targets)
-        {
-            bool ok = await SendScreenFrameToClientAsync(connection, capture, token);
-
-            if (ok)
-            {
-                success++;
-            }
-        }
-
-        UpdateScreenStatus($"Screen frame sent: {success}/{targets.Count}, {capture.Width}x{capture.Height}, {FormatBytes(capture.ImageBytes.Length)}");
-
-        if (logResult)
-        {
-            AddLog($"Screen frame sent: {success}/{targets.Count}");
-        }
-    }
-
-    private async Task<bool> SendScreenFrameToClientAsync(ClientConnection connection, ScreenCaptureData capture, CancellationToken token)
-    {
-        bool lockTaken = false;
-
-        try
-        {
-            byte[] payload = BuildScreenFramePayload(capture);
-
-            await connection.WriteLock.WaitAsync(token);
-            lockTaken = true;
-
-            NetworkStream stream = connection.Client.GetStream();
-            await NetPacket.WriteAsync(stream, PacketType.ScreenFrame, payload, token);
-
-            return true;
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            AddLog($"Screen frame send failed: {connection.DisplayName} / {ex.Message}");
-            RemoveClient(connection);
-            return false;
-        }
-        finally
-        {
-            if (lockTaken)
-            {
-                try
-                {
-                    connection.WriteLock.Release();
-                }
-                catch
-                {
-                }
-            }
-        }
-    }
-
-    private ScreenCaptureData CaptureVirtualScreenJpeg(int quality)
-    {
-        Rectangle bounds = SystemInformation.VirtualScreen;
-
-        using var bitmap = new Bitmap(bounds.Width, bounds.Height);
-        using (Graphics graphics = Graphics.FromImage(bitmap))
-        {
-            graphics.CopyFromScreen(bounds.Left, bounds.Top, 0, 0, bounds.Size, CopyPixelOperation.SourceCopy);
-        }
-
-        using var memoryStream = new MemoryStream();
-        SaveJpeg(bitmap, memoryStream, quality);
-
-        return new ScreenCaptureData
-        {
-            FrameNo = Interlocked.Increment(ref _screenFrameNo),
-            CapturedAtUtc = DateTimeOffset.UtcNow,
-            Width = bounds.Width,
-            Height = bounds.Height,
-            ImageBytes = memoryStream.ToArray(),
-        };
-    }
-
-    private static void SaveJpeg(Image image, Stream stream, int quality)
-    {
-        ImageCodecInfo? encoder = ImageCodecInfo.GetImageDecoders()
-            .FirstOrDefault(x => string.Equals(x.FormatID.ToString(), ImageFormat.Jpeg.Guid.ToString(), StringComparison.OrdinalIgnoreCase));
-
-        if (encoder is null)
-        {
-            image.Save(stream, ImageFormat.Jpeg);
-            return;
-        }
-
-        using var encoderParameters = new EncoderParameters(1);
-        encoderParameters.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, quality);
-        image.Save(stream, encoder, encoderParameters);
-    }
-
-    private static byte[] BuildScreenFramePayload(ScreenCaptureData capture)
-    {
-        var info = new ScreenFrameInfo
-        {
-            Width = capture.Width,
-            Height = capture.Height,
-            Format = "jpeg",
-            FrameNo = capture.FrameNo,
-            CapturedAtUtc = capture.CapturedAtUtc,
-        };
-
-        byte[] infoBytes = JsonSerializer.SerializeToUtf8Bytes(info);
-        byte[] payload = new byte[4 + infoBytes.Length + capture.ImageBytes.Length];
-
-        BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(0, 4), infoBytes.Length);
-        infoBytes.CopyTo(payload.AsSpan(4, infoBytes.Length));
-        capture.ImageBytes.CopyTo(payload.AsSpan(4 + infoBytes.Length, capture.ImageBytes.Length));
-
-        return payload;
-    }
-
-    private int GetScreenIntervalMs()
-    {
-        if (InvokeRequired)
-        {
-            return (int)Invoke(new Func<int>(GetScreenIntervalMs));
-        }
-
-        return (int)_screenIntervalBox.Value;
-    }
-
-    private int GetScreenQuality()
-    {
-        if (InvokeRequired)
-        {
-            return (int)Invoke(new Func<int>(GetScreenQuality));
-        }
-
-        return (int)_screenQualityBox.Value;
+        AddLog("送信キャンセルを要求しました。");
     }
 
     private void StopServer()
     {
         try
         {
-            _screenStreamCts?.Cancel();
             _transferCts?.Cancel();
             _serverCts?.Cancel();
 
@@ -1332,7 +1082,6 @@ public sealed class SenderForm : Form
             _listener = null;
             _acceptTask = null;
             _isSendingFile = false;
-            _isStreamingScreen = false;
 
             if (!IsDisposed)
             {
@@ -1341,9 +1090,8 @@ public sealed class SenderForm : Form
                 SetSendButtonsEnabled(false);
 
                 _clientList.Items.Clear();
-                UpdateScreenStatus("Screen monitor idle");
 
-                AddLog("Server stopped.");
+                AddLog("サーバー停止");
             }
         }
     }
@@ -1358,35 +1106,20 @@ public sealed class SenderForm : Form
             return;
         }
 
-        bool messageActual = enabled && !_isSendingFile;
-        bool fileActual = enabled && !_isSendingFile && !_isStreamingScreen;
-        bool screenActual = enabled && !_isSendingFile && !_isStreamingScreen;
+        bool actual = enabled && !_isSendingFile;
 
-        _sendAllButton.Enabled = messageActual;
-        _sendSelectedButton.Enabled = messageActual;
+        _sendAllButton.Enabled = actual;
+        _sendSelectedButton.Enabled = actual;
+        _sendFileAllButton.Enabled = actual;
+        _sendFileSelectedButton.Enabled = actual;
+        _sendScreenAllButton.Enabled = actual;
+        _sendScreenSelectedButton.Enabled = actual;
 
-        _sendFileAllButton.Enabled = fileActual;
-        _sendFileSelectedButton.Enabled = fileActual;
-        _addFilesButton.Enabled = !_isSendingFile && !_isStreamingScreen;
-        _addFolderButton.Enabled = !_isSendingFile && !_isStreamingScreen;
-        _clearFilesButton.Enabled = !_isSendingFile && !_isStreamingScreen;
+        _addFilesButton.Enabled = !_isSendingFile;
+        _addFolderButton.Enabled = !_isSendingFile;
+        _clearFilesButton.Enabled = !_isSendingFile;
+
         _cancelTransferButton.Enabled = _isSendingFile;
-
-        _sendScreenOnceAllButton.Enabled = screenActual;
-        _sendScreenOnceSelectedButton.Enabled = screenActual;
-        _startScreenAllButton.Enabled = screenActual;
-        _startScreenSelectedButton.Enabled = screenActual;
-        _stopScreenButton.Enabled = _isStreamingScreen;
-        _screenIntervalBox.Enabled = !_isStreamingScreen;
-        _screenQualityBox.Enabled = !_isStreamingScreen;
-    }
-
-    private List<ClientConnection> GetClientSnapshot()
-    {
-        lock (_clients)
-        {
-            return _clients.ToList();
-        }
     }
 
     private void RemoveClient(ClientConnection connection)
@@ -1452,19 +1185,6 @@ public sealed class SenderForm : Form
 
         _progressBar.Value = value;
         _progressLabel.Text = label;
-    }
-
-    private void UpdateScreenStatus(string message)
-    {
-        if (IsDisposed) return;
-
-        if (InvokeRequired)
-        {
-            BeginInvoke(new Action(() => UpdateScreenStatus(message)));
-            return;
-        }
-
-        _screenStatusLabel.Text = message;
     }
 
     private void AddLog(string message)
@@ -1564,19 +1284,6 @@ public sealed class TransferItem
     }
 }
 
-public sealed class ScreenCaptureData
-{
-    public required long FrameNo { get; init; }
-
-    public required DateTimeOffset CapturedAtUtc { get; init; }
-
-    public required int Width { get; init; }
-
-    public required int Height { get; init; }
-
-    public required byte[] ImageBytes { get; init; }
-}
-
 public enum TransferResult
 {
     Success,
@@ -1598,22 +1305,22 @@ public sealed class FileStartInfo
     public long FileSize { get; set; }
 }
 
-public sealed class TransferCancelInfo
-{
-    public string Reason { get; set; } = "";
-}
-
 public sealed class ScreenFrameInfo
 {
+    public string ImageFormat { get; set; } = "jpeg";
+
     public int Width { get; set; }
 
     public int Height { get; set; }
 
-    public string Format { get; set; } = "jpeg";
+    public DateTimeOffset CapturedAt { get; set; }
 
-    public long FrameNo { get; set; }
+    public byte[] ImageBytes { get; set; } = Array.Empty<byte>();
+}
 
-    public DateTimeOffset CapturedAtUtc { get; set; }
+public sealed class TransferCancelInfo
+{
+    public string Reason { get; set; } = "";
 }
 
 public static class PacketType
@@ -1635,7 +1342,7 @@ public static class PacketType
 public static class NetPacket
 {
     private const int HeaderSize = 5;
-    private const int MaxPayloadSize = 32 * 1024 * 1024;
+    private const int MaxPayloadSize = 4 * 1024 * 1024;
 
     public static async Task WriteAsync(
         NetworkStream stream,
@@ -1645,7 +1352,7 @@ public static class NetPacket
     {
         if (payload.Length > MaxPayloadSize)
         {
-            throw new InvalidOperationException("Payload is too large.");
+            throw new InvalidOperationException("送信データが大きすぎます。");
         }
 
         byte[] header = new byte[HeaderSize];

@@ -1,4 +1,4 @@
-﻿using System.Buffers.Binary;
+using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Net.Sockets;
 using System.Text;
@@ -27,19 +27,17 @@ public sealed class ReceiverForm : Form
     private readonly Button _clearButton = new();
     private readonly Button _chooseFolderButton = new();
     private readonly Button _openFolderButton = new();
-    private readonly Button _openFullScreenButton = new();
 
     private readonly CheckBox _openFolderAfterReceiveCheck = new();
-    private readonly CheckBox _autoFullScreenCheck = new();
 
     private readonly Label _statusLabel = new();
     private readonly Label _progressLabel = new();
-    private readonly Label _screenInfoLabel = new();
     private readonly ProgressBar _progressBar = new();
 
-    private readonly PictureBox _screenPicture = new();
     private readonly ListBox _messageList = new();
     private readonly ListBox _logList = new();
+    private readonly PictureBox _screenPictureBox = new();
+    private readonly Label _screenInfoLabel = new();
 
     private TcpClient? _client;
     private CancellationTokenSource? _cts;
@@ -54,15 +52,11 @@ public sealed class ReceiverForm : Form
     private long _batchReceivedBytes;
     private readonly Stopwatch _batchStopwatch = new();
 
-    private Image? _lastScreenImage;
-    private Form? _fullScreenForm;
-    private PictureBox? _fullScreenPicture;
-
     public ReceiverForm()
     {
-        Text = "LAN Receiver - Step 6 Screen Monitor";
-        Width = 1080;
-        Height = 820;
+        Text = "LAN Receiver - Step 4 Multi File Transfer";
+        Width = 960;
+        Height = 720;
         StartPosition = FormStartPosition.CenterScreen;
 
         BuildUi();
@@ -72,14 +66,8 @@ public sealed class ReceiverForm : Form
         _clearButton.Click += (_, _) => _messageList.Items.Clear();
         _chooseFolderButton.Click += (_, _) => ChooseSaveFolder();
         _openFolderButton.Click += (_, _) => OpenSaveFolder();
-        _openFullScreenButton.Click += (_, _) => OpenFullScreenMonitor();
 
-        FormClosing += (_, _) =>
-        {
-            CloseFullScreenMonitor();
-            DisconnectSilent();
-            _lastScreenImage?.Dispose();
-        };
+        FormClosing += (_, _) => DisconnectSilent();
     }
 
     private void BuildUi()
@@ -101,10 +89,10 @@ public sealed class ReceiverForm : Form
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 46));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 27));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 27));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 62));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 38));
 
         var connectPanel = new FlowLayoutPanel
         {
@@ -115,7 +103,7 @@ public sealed class ReceiverForm : Form
 
         connectPanel.Controls.Add(new Label
         {
-            Text = "Server IP:",
+            Text = "サーバーIP:",
             AutoSize = true,
             Padding = new Padding(0, 8, 0, 0),
         });
@@ -126,7 +114,7 @@ public sealed class ReceiverForm : Form
 
         connectPanel.Controls.Add(new Label
         {
-            Text = "Port:",
+            Text = "ポート:",
             AutoSize = true,
             Padding = new Padding(12, 8, 0, 0),
         });
@@ -135,17 +123,17 @@ public sealed class ReceiverForm : Form
         _portBox.Width = 100;
         connectPanel.Controls.Add(_portBox);
 
-        _connectButton.Text = "Connect";
+        _connectButton.Text = "接続";
         _connectButton.Width = 90;
         connectPanel.Controls.Add(_connectButton);
 
-        _disconnectButton.Text = "Disconnect";
-        _disconnectButton.Width = 105;
+        _disconnectButton.Text = "切断";
+        _disconnectButton.Width = 90;
         _disconnectButton.Enabled = false;
         connectPanel.Controls.Add(_disconnectButton);
 
-        _clearButton.Text = "Clear";
-        _clearButton.Width = 90;
+        _clearButton.Text = "表示クリア";
+        _clearButton.Width = 100;
         connectPanel.Controls.Add(_clearButton);
 
         root.Controls.Add(connectPanel, 0, 0);
@@ -164,7 +152,7 @@ public sealed class ReceiverForm : Form
 
         savePanel.Controls.Add(new Label
         {
-            Text = "Save to:",
+            Text = "保存先:",
             Dock = DockStyle.Fill,
             TextAlign = ContentAlignment.MiddleLeft,
         }, 0, 0);
@@ -174,11 +162,11 @@ public sealed class ReceiverForm : Form
         _saveFolderBox.ReadOnly = true;
         savePanel.Controls.Add(_saveFolderBox, 1, 0);
 
-        _chooseFolderButton.Text = "Choose";
+        _chooseFolderButton.Text = "保存先選択";
         _chooseFolderButton.Dock = DockStyle.Fill;
         savePanel.Controls.Add(_chooseFolderButton, 2, 0);
 
-        _openFolderButton.Text = "Open";
+        _openFolderButton.Text = "保存先を開く";
         _openFolderButton.Dock = DockStyle.Fill;
         savePanel.Controls.Add(_openFolderButton, 3, 0);
 
@@ -191,94 +179,88 @@ public sealed class ReceiverForm : Form
             WrapContents = false,
         };
 
-        _openFolderAfterReceiveCheck.Text = "Open save folder after receiving files";
+        _openFolderAfterReceiveCheck.Text = "受信完了後に保存先フォルダを開く";
         _openFolderAfterReceiveCheck.AutoSize = true;
         _openFolderAfterReceiveCheck.Checked = false;
         optionPanel.Controls.Add(_openFolderAfterReceiveCheck);
 
-        _autoFullScreenCheck.Text = "Auto full screen on first screen frame";
-        _autoFullScreenCheck.AutoSize = true;
-        _autoFullScreenCheck.Checked = true;
-        optionPanel.Controls.Add(_autoFullScreenCheck);
-
-        _openFullScreenButton.Text = "Full screen";
-        _openFullScreenButton.Width = 110;
-        optionPanel.Controls.Add(_openFullScreenButton);
-
         root.Controls.Add(optionPanel, 0, 2);
 
-        var statusPanel = new TableLayoutPanel
+        _statusLabel.Text = "未接続";
+        _statusLabel.Dock = DockStyle.Fill;
+        _statusLabel.TextAlign = ContentAlignment.MiddleLeft;
+        root.Controls.Add(_statusLabel, 0, 3);
+
+        var progressPanel = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            RowCount = 3,
+            RowCount = 2,
             ColumnCount = 1,
         };
 
-        statusPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 20));
-        statusPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 20));
-        statusPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        progressPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
+        progressPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        _statusLabel.Text = "Disconnected";
-        _statusLabel.Dock = DockStyle.Fill;
-        _statusLabel.TextAlign = ContentAlignment.MiddleLeft;
-        statusPanel.Controls.Add(_statusLabel, 0, 0);
-
-        _progressLabel.Text = "Idle";
+        _progressLabel.Text = "待機中";
         _progressLabel.Dock = DockStyle.Fill;
         _progressLabel.TextAlign = ContentAlignment.MiddleLeft;
-        statusPanel.Controls.Add(_progressLabel, 0, 1);
+        progressPanel.Controls.Add(_progressLabel, 0, 0);
 
         _progressBar.Dock = DockStyle.Fill;
         _progressBar.Minimum = 0;
         _progressBar.Maximum = 1000;
-        statusPanel.Controls.Add(_progressBar, 0, 2);
+        progressPanel.Controls.Add(_progressBar, 0, 1);
 
-        root.Controls.Add(statusPanel, 0, 3);
+        root.Controls.Add(progressPanel, 0, 4);
 
-        var screenGroup = new GroupBox
+        var messageGroup = new GroupBox
         {
-            Text = "Screen monitor preview",
+            Text = "受信メッセージ・ファイル",
             Dock = DockStyle.Fill,
         };
 
+        var receiveTabs = new TabControl
+        {
+            Dock = DockStyle.Fill,
+        };
+
+        var messagePage = new TabPage("メッセージ・ファイル");
+        _messageList.Dock = DockStyle.Fill;
+        messagePage.Controls.Add(_messageList);
+
+        var screenPage = new TabPage("画面プレビュー");
         var screenLayout = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             RowCount = 2,
             ColumnCount = 1,
-            Padding = new Padding(8),
         };
 
-        screenLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
         screenLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        screenLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
 
-        _screenInfoLabel.Text = "No screen frame received.";
+        _screenPictureBox.Dock = DockStyle.Fill;
+        _screenPictureBox.SizeMode = PictureBoxSizeMode.Zoom;
+        _screenPictureBox.BackColor = Color.Black;
+        screenLayout.Controls.Add(_screenPictureBox, 0, 0);
+
+        _screenInfoLabel.Text = "未受信";
         _screenInfoLabel.Dock = DockStyle.Fill;
         _screenInfoLabel.TextAlign = ContentAlignment.MiddleLeft;
-        screenLayout.Controls.Add(_screenInfoLabel, 0, 0);
+        screenLayout.Controls.Add(_screenInfoLabel, 0, 1);
 
-        _screenPicture.Dock = DockStyle.Fill;
-        _screenPicture.BackColor = Color.Black;
-        _screenPicture.SizeMode = PictureBoxSizeMode.Zoom;
-        screenLayout.Controls.Add(_screenPicture, 0, 1);
+        screenPage.Controls.Add(screenLayout);
 
-        screenGroup.Controls.Add(screenLayout);
-        root.Controls.Add(screenGroup, 0, 4);
+        receiveTabs.TabPages.Add(messagePage);
+        receiveTabs.TabPages.Add(screenPage);
 
-        var messageGroup = new GroupBox
-        {
-            Text = "Received messages / files",
-            Dock = DockStyle.Fill,
-        };
-
-        _messageList.Dock = DockStyle.Fill;
-        messageGroup.Controls.Add(_messageList);
+        messageGroup.Controls.Add(receiveTabs);
 
         root.Controls.Add(messageGroup, 0, 5);
 
         var logGroup = new GroupBox
         {
-            Text = "Log",
+            Text = "ログ",
             Dock = DockStyle.Fill,
         };
 
@@ -294,7 +276,7 @@ public sealed class ReceiverForm : Form
     {
         if (_client is not null)
         {
-            AddLog("Already connected.");
+            AddLog("すでに接続しています。");
             return;
         }
 
@@ -302,13 +284,13 @@ public sealed class ReceiverForm : Form
 
         if (string.IsNullOrWhiteSpace(host))
         {
-            AddLog("Enter server IP.");
+            AddLog("サーバーIPを入力してください。");
             return;
         }
 
         if (!int.TryParse(_portBox.Text, out int port) || port < 1 || port > 65535)
         {
-            AddLog("Invalid port number.");
+            AddLog("ポート番号が不正です。");
             return;
         }
 
@@ -323,14 +305,14 @@ public sealed class ReceiverForm : Form
 
             _cts = new CancellationTokenSource();
 
-            SetConnectedUi(true, $"Connected to {host}:{port}");
-            AddLog($"Connected: {host}:{port}");
+            SetConnectedUi(true, $"{host}:{port} に接続中");
+            AddLog($"接続成功: {host}:{port}");
 
             _ = Task.Run(() => ReceiveLoopAsync(_cts.Token));
         }
         catch (Exception ex)
         {
-            AddLog($"Connection failed: {ex.Message}");
+            AddLog($"接続失敗: {ex.Message}");
             DisconnectSilent();
         }
     }
@@ -351,7 +333,7 @@ public sealed class ReceiverForm : Form
                 {
                     if (!_manualDisconnect)
                     {
-                        AddLog("Server disconnected.");
+                        AddLog("サーバーから切断されました。");
                     }
 
                     break;
@@ -370,21 +352,21 @@ public sealed class ReceiverForm : Form
         {
             if (!_manualDisconnect)
             {
-                AddLog("Server communication ended.");
+                AddLog("サーバーとの通信が終了しました。");
             }
         }
         catch (SocketException)
         {
             if (!_manualDisconnect)
             {
-                AddLog("Server communication ended.");
+                AddLog("サーバーとの通信が終了しました。");
             }
         }
         catch (Exception ex)
         {
             if (!_manualDisconnect)
             {
-                AddLog($"Receive error: {ex.Message}");
+                AddLog($"受信エラー: {ex.Message}");
             }
         }
         finally
@@ -402,7 +384,7 @@ public sealed class ReceiverForm : Form
             case PacketType.TextMessage:
                 {
                     string text = Encoding.UTF8.GetString(packet.Payload);
-                    AddMessage($"Message: {text}");
+                    AddMessage($"メッセージ: {text}");
                     break;
                 }
 
@@ -432,7 +414,7 @@ public sealed class ReceiverForm : Form
 
             case PacketType.ScreenFrame:
                 {
-                    HandleScreenFrame(packet.Payload);
+                    DisplayScreenFrame(packet.Payload);
                     break;
                 }
 
@@ -450,147 +432,10 @@ public sealed class ReceiverForm : Form
 
             default:
                 {
-                    AddLog($"Unknown packet type: {packet.Type}");
+                    AddLog($"未知のパケット種別: {packet.Type}");
                     break;
                 }
         }
-    }
-
-    private void HandleScreenFrame(byte[] payload)
-    {
-        try
-        {
-            if (payload.Length < 4)
-            {
-                AddLog("Invalid screen frame payload.");
-                return;
-            }
-
-            int infoLength = BinaryPrimitives.ReadInt32BigEndian(payload.AsSpan(0, 4));
-
-            if (infoLength < 1 || infoLength > payload.Length - 4)
-            {
-                AddLog("Invalid screen frame metadata.");
-                return;
-            }
-
-            ScreenFrameInfo? info = JsonSerializer.Deserialize<ScreenFrameInfo>(payload.AsSpan(4, infoLength));
-
-            if (info is null)
-            {
-                AddLog("Screen frame metadata parse failed.");
-                return;
-            }
-
-            byte[] imageBytes = payload.AsSpan(4 + infoLength).ToArray();
-
-            using var memoryStream = new MemoryStream(imageBytes);
-            using Image loadedImage = Image.FromStream(memoryStream);
-            var frameImage = new Bitmap(loadedImage);
-
-            UpdateScreenFrame(frameImage, info, imageBytes.Length);
-        }
-        catch (Exception ex)
-        {
-            AddLog($"Screen frame receive failed: {ex.Message}");
-        }
-    }
-
-    private void UpdateScreenFrame(Image frameImage, ScreenFrameInfo info, int byteSize)
-    {
-        if (IsDisposed)
-        {
-            frameImage.Dispose();
-            return;
-        }
-
-        if (InvokeRequired)
-        {
-            BeginInvoke(new Action(() => UpdateScreenFrame(frameImage, info, byteSize)));
-            return;
-        }
-
-        Image? old = _lastScreenImage;
-        _lastScreenImage = frameImage;
-        _screenPicture.Image = frameImage;
-
-        if (_fullScreenPicture is not null)
-        {
-            _fullScreenPicture.Image = frameImage;
-        }
-
-        old?.Dispose();
-
-        _screenInfoLabel.Text = $"Frame {info.FrameNo} / {info.Width}x{info.Height} / {FormatBytes(byteSize)} / {DateTime.Now:HH:mm:ss}";
-
-        if (_autoFullScreenCheck.Checked && _fullScreenForm is null)
-        {
-            OpenFullScreenMonitor();
-        }
-    }
-
-    private void OpenFullScreenMonitor()
-    {
-        if (_fullScreenForm is not null)
-        {
-            _fullScreenForm.Activate();
-            return;
-        }
-
-        var form = new Form
-        {
-            Text = "LAN Screen Monitor",
-            FormBorderStyle = FormBorderStyle.None,
-            WindowState = FormWindowState.Maximized,
-            BackColor = Color.Black,
-            KeyPreview = true,
-            TopMost = true,
-        };
-
-        var picture = new PictureBox
-        {
-            Dock = DockStyle.Fill,
-            BackColor = Color.Black,
-            SizeMode = PictureBoxSizeMode.Zoom,
-            Image = _lastScreenImage,
-        };
-
-        form.Controls.Add(picture);
-
-        form.KeyDown += (_, e) =>
-        {
-            if (e.KeyCode == Keys.Escape)
-            {
-                form.Close();
-            }
-        };
-
-        picture.DoubleClick += (_, _) => form.Close();
-
-        form.FormClosed += (_, _) =>
-        {
-            picture.Image = null;
-            _fullScreenPicture = null;
-            _fullScreenForm = null;
-        };
-
-        _fullScreenForm = form;
-        _fullScreenPicture = picture;
-        form.Show(this);
-    }
-
-    private void CloseFullScreenMonitor()
-    {
-        try
-        {
-            _fullScreenForm?.Close();
-        }
-        catch
-        {
-        }
-
-        _fullScreenForm = null;
-        _fullScreenPicture = null;
     }
 
     private void StartBatchReceive(byte[] payload)
@@ -602,7 +447,7 @@ public sealed class ReceiverForm : Form
 
         if (info is null || info.FileCount < 0 || info.TotalSize < 0)
         {
-            AddLog("Invalid batch start data.");
+            AddLog("一括受信開始情報が不正です。");
             return;
         }
 
@@ -614,8 +459,8 @@ public sealed class ReceiverForm : Form
 
         _batchStopwatch.Restart();
 
-        UpdateProgress(0, Math.Max(_batchExpectedBytes, 1), $"Batch receive start: {_batchExpectedFiles} files / {FormatBytes(_batchExpectedBytes)}");
-        AddLog($"Batch receive start: {_batchExpectedFiles} files / {FormatBytes(_batchExpectedBytes)}");
+        UpdateProgress(0, Math.Max(_batchExpectedBytes, 1), $"一括受信開始: {_batchExpectedFiles} 件 / {FormatBytes(_batchExpectedBytes)}");
+        AddLog($"一括受信開始: {_batchExpectedFiles} 件 / {FormatBytes(_batchExpectedBytes)}");
     }
 
     private void StartFileReceive(byte[] payload)
@@ -626,7 +471,7 @@ public sealed class ReceiverForm : Form
 
         if (info is null || string.IsNullOrWhiteSpace(info.FileName) || info.FileSize < 0)
         {
-            AddLog("Invalid file start data.");
+            AddLog("ファイル開始情報が不正です。");
             return;
         }
 
@@ -664,16 +509,16 @@ public sealed class ReceiverForm : Form
         UpdateProgress(
             _batchReceivedBytes,
             Math.Max(_batchExpectedBytes > 0 ? _batchExpectedBytes : info.FileSize, 1),
-            $"Receiving: {safeRelativePath}");
+            $"受信開始: {safeRelativePath}");
 
-        AddLog($"File receive start: {safeRelativePath} / {FormatBytes(info.FileSize)}");
+        AddLog($"ファイル受信開始: {safeRelativePath} / {FormatBytes(info.FileSize)}");
     }
 
     private async Task WriteFileChunkAsync(byte[] payload)
     {
         if (_fileSession is null)
         {
-            AddLog("File chunk arrived before file start. Ignored.");
+            AddLog("ファイル開始前のチャンクを受信したため破棄しました。");
             return;
         }
 
@@ -682,9 +527,9 @@ public sealed class ReceiverForm : Form
 
         if (_fileSession.ReceivedBytes > _fileSession.FileSize)
         {
-            AddLog("Received file size exceeded expected size. File receive aborted.");
+            AddLog("受信サイズが予定サイズを超えたため、ファイル受信を中断しました。");
             CloseCurrentFileSession(deleteTempFile: true);
-            UpdateProgress(0, 1, "Receive failed");
+            UpdateProgress(0, 1, "受信失敗");
             return;
         }
 
@@ -708,14 +553,14 @@ public sealed class ReceiverForm : Form
         UpdateProgress(
             displayCurrent,
             displayTotal,
-            $"Receiving: {_fileSession.FileName} / {FormatBytes(displayCurrent)} / {FormatBytes(displayTotal)} / {FormatBytes(speed)}/s");
+            $"受信中: {_fileSession.FileName} / {FormatBytes(displayCurrent)} / {FormatBytes(displayTotal)} / {FormatBytes(speed)}/s");
     }
 
     private void FinishFileReceive()
     {
         if (_fileSession is null)
         {
-            AddLog("File end arrived without file session.");
+            AddLog("ファイル受信状態がないまま完了通知を受け取りました。");
             return;
         }
 
@@ -732,7 +577,7 @@ public sealed class ReceiverForm : Form
 
             if (receivedBytes != fileSize)
             {
-                AddLog($"File size mismatch: {fileName} / {FormatBytes(receivedBytes)} / {FormatBytes(fileSize)}");
+                AddLog($"ファイルサイズ不一致: {fileName} / {FormatBytes(receivedBytes)} / {FormatBytes(fileSize)}");
 
                 try
                 {
@@ -742,7 +587,7 @@ public sealed class ReceiverForm : Form
                 {
                 }
 
-                UpdateProgress(0, 1, "Receive failed");
+                UpdateProgress(0, 1, "受信失敗");
                 return;
             }
 
@@ -751,13 +596,13 @@ public sealed class ReceiverForm : Form
             _batchReceivedFiles++;
             _batchReceivedBytes += receivedBytes;
 
-            AddMessage($"File received: {fileName}");
-            AddLog($"Saved: {finalPath}");
+            AddMessage($"ファイル受信完了: {fileName}");
+            AddLog($"保存完了: {finalPath}");
 
             long displayTotal = _batchActive ? Math.Max(_batchExpectedBytes, 1) : Math.Max(fileSize, 1);
             long displayCurrent = _batchActive ? _batchReceivedBytes : receivedBytes;
 
-            UpdateProgress(displayCurrent, displayTotal, $"File received: {fileName}");
+            UpdateProgress(displayCurrent, displayTotal, $"受信完了: {fileName}");
         }
         finally
         {
@@ -772,10 +617,10 @@ public sealed class ReceiverForm : Form
 
         _batchStopwatch.Stop();
 
-        AddMessage($"Batch receive done: {_batchReceivedFiles}/{_batchExpectedFiles} files");
-        AddLog($"Batch receive done: {_batchReceivedFiles}/{_batchExpectedFiles} files / {FormatBytes(_batchReceivedBytes)}");
+        AddMessage($"一括受信完了: {_batchReceivedFiles}/{_batchExpectedFiles} 件");
+        AddLog($"一括受信完了: {_batchReceivedFiles}/{_batchExpectedFiles} 件 / {FormatBytes(_batchReceivedBytes)}");
 
-        UpdateProgress(1000, 1000, $"Batch receive done: {_batchReceivedFiles}/{_batchExpectedFiles} files");
+        UpdateProgress(1000, 1000, $"一括受信完了: {_batchReceivedFiles}/{_batchExpectedFiles} 件");
 
         bool shouldOpen = GetOpenFolderAfterReceive();
 
@@ -789,7 +634,7 @@ public sealed class ReceiverForm : Form
 
     private void HandleTransferCancel(byte[] payload)
     {
-        string reason = "Canceled by sender.";
+        string reason = "送信側でキャンセルされました。";
 
         try
         {
@@ -807,9 +652,68 @@ public sealed class ReceiverForm : Form
         CloseCurrentFileSession(deleteTempFile: true);
         ResetBatchState();
 
-        UpdateProgress(0, 1, "Receive canceled");
-        AddLog($"Receive canceled: {reason}");
-        AddMessage($"Receive canceled: {reason}");
+        UpdateProgress(0, 1, "受信キャンセル");
+        AddLog($"受信キャンセル: {reason}");
+        AddMessage($"受信キャンセル: {reason}");
+    }
+
+    private void DisplayScreenFrame(byte[] payload)
+    {
+        ScreenFrameInfo? info;
+
+        try
+        {
+            info = JsonSerializer.Deserialize<ScreenFrameInfo>(payload);
+        }
+        catch (Exception ex)
+        {
+            AddLog($"画面フレームの解析に失敗しました: {ex.Message}");
+            return;
+        }
+
+        if (info is null || info.ImageBytes.Length == 0)
+        {
+            AddLog("画面フレーム情報が不正です。");
+            return;
+        }
+
+        Image displayImage;
+
+        try
+        {
+            using var memory = new MemoryStream(info.ImageBytes);
+            using Image loaded = Image.FromStream(memory);
+            displayImage = new Bitmap(loaded);
+        }
+        catch (Exception ex)
+        {
+            AddLog($"画面画像の読み込みに失敗しました: {ex.Message}");
+            return;
+        }
+
+        ShowScreenFrame(displayImage, info);
+    }
+
+    private void ShowScreenFrame(Image image, ScreenFrameInfo info)
+    {
+        if (IsDisposed)
+        {
+            image.Dispose();
+            return;
+        }
+
+        if (InvokeRequired)
+        {
+            BeginInvoke(new Action(() => ShowScreenFrame(image, info)));
+            return;
+        }
+
+        Image? oldImage = _screenPictureBox.Image;
+        _screenPictureBox.Image = image;
+        oldImage?.Dispose();
+
+        _screenInfoLabel.Text = $"{info.Width}x{info.Height} / {info.ImageFormat} / {FormatBytes(info.ImageBytes.Length)} / {info.CapturedAt:HH:mm:ss}";
+        AddMessage($"画面プレビュー受信: {info.Width}x{info.Height}");
     }
 
     private void CloseCurrentFileSession(bool deleteTempFile)
@@ -861,7 +765,7 @@ public sealed class ReceiverForm : Form
     {
         using var dialog = new FolderBrowserDialog
         {
-            Description = "Select a save folder",
+            Description = "受信ファイルの保存先を選択してください",
             UseDescriptionForTitle = true,
             SelectedPath = _saveFolderBox.Text,
         };
@@ -869,7 +773,7 @@ public sealed class ReceiverForm : Form
         if (dialog.ShowDialog(this) == DialogResult.OK)
         {
             _saveFolderBox.Text = dialog.SelectedPath;
-            AddLog($"Save folder changed: {dialog.SelectedPath}");
+            AddLog($"保存先変更: {dialog.SelectedPath}");
         }
     }
 
@@ -920,7 +824,7 @@ public sealed class ReceiverForm : Form
         }
         catch (Exception ex)
         {
-            AddLog($"Failed to open save folder: {ex.Message}");
+            AddLog($"保存先を開けませんでした: {ex.Message}");
         }
     }
 
@@ -928,7 +832,7 @@ public sealed class ReceiverForm : Form
     {
         _manualDisconnect = true;
         DisconnectSilent();
-        AddLog("Disconnected.");
+        AddLog("切断しました。");
     }
 
     private void DisconnectSilent()
@@ -952,7 +856,7 @@ public sealed class ReceiverForm : Form
 
             if (!IsDisposed)
             {
-                SetConnectedUi(false, "Disconnected");
+                SetConnectedUi(false, "未接続");
             }
         }
     }
@@ -980,7 +884,7 @@ public sealed class ReceiverForm : Form
         _cts = null;
         _client = null;
 
-        SetConnectedUi(false, "Disconnected");
+        SetConnectedUi(false, "未接続");
     }
 
     private void SetConnectedUi(bool connected, string status)
@@ -1165,22 +1069,22 @@ public sealed class FileStartInfo
     public long FileSize { get; set; }
 }
 
-public sealed class TransferCancelInfo
-{
-    public string Reason { get; set; } = "";
-}
-
 public sealed class ScreenFrameInfo
 {
+    public string ImageFormat { get; set; } = "jpeg";
+
     public int Width { get; set; }
 
     public int Height { get; set; }
 
-    public string Format { get; set; } = "jpeg";
+    public DateTimeOffset CapturedAt { get; set; }
 
-    public long FrameNo { get; set; }
+    public byte[] ImageBytes { get; set; } = Array.Empty<byte>();
+}
 
-    public DateTimeOffset CapturedAtUtc { get; set; }
+public sealed class TransferCancelInfo
+{
+    public string Reason { get; set; } = "";
 }
 
 public static class PacketType
@@ -1209,7 +1113,7 @@ public sealed class ReceivedPacket
 public static class NetPacket
 {
     private const int HeaderSize = 5;
-    private const int MaxPayloadSize = 32 * 1024 * 1024;
+    private const int MaxPayloadSize = 4 * 1024 * 1024;
 
     public static async Task<ReceivedPacket?> ReadAsync(NetworkStream stream, CancellationToken token)
     {
@@ -1227,7 +1131,7 @@ public static class NetPacket
 
         if (payloadLength < 0 || payloadLength > MaxPayloadSize)
         {
-            throw new InvalidOperationException("Invalid payload size.");
+            throw new InvalidOperationException("受信データサイズが不正です。");
         }
 
         byte[] payload = new byte[payloadLength];
