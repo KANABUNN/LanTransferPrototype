@@ -1,4 +1,4 @@
-﻿using System.Buffers.Binary;
+using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Net.Sockets;
 using System.Text;
@@ -40,6 +40,14 @@ public sealed class ReceiverForm : Form
     private readonly PictureBox _screenPicture = new();
     private readonly ListBox _messageList = new();
     private readonly ListBox _logList = new();
+    private readonly NotifyIcon _trayIcon = new();
+    private readonly ContextMenuStrip _trayMenu = new();
+    private readonly System.Windows.Forms.Timer _autoConnectTimer = new();
+
+    private ReceiverAutoConfig _autoConfig = new();
+    private int _nextServerIndex;
+    private bool _exitRequested;
+    private bool _autoConnectLoopRunning;
 
     private TcpClient? _client;
     private CancellationTokenSource? _cts;
@@ -66,6 +74,19 @@ public sealed class ReceiverForm : Form
         StartPosition = FormStartPosition.CenterScreen;
 
         BuildUi();
+        LoadAutoConfig();
+        ApplyAutoConfigToUi();
+        BuildTraySupport();
+
+        Shown += async (_, _) => await StartAutoConnectOnShownAsync();
+
+        Resize += (_, _) =>
+        {
+            if (WindowState == FormWindowState.Minimized && _autoConfig.MinimizeToTray)
+            {
+                HideToTray();
+            }
+        };
 
         _connectButton.Click += async (_, _) => await ConnectAsync();
         _disconnectButton.Click += (_, _) => DisconnectByUser();
@@ -74,11 +95,23 @@ public sealed class ReceiverForm : Form
         _openFolderButton.Click += (_, _) => OpenSaveFolder();
         _openFullScreenButton.Click += (_, _) => OpenFullScreenMonitor();
 
-        FormClosing += (_, _) =>
+        FormClosing += (_, e) =>
         {
+            if (!_exitRequested && _autoConfig.CloseButtonToTray)
+            {
+                e.Cancel = true;
+                HideToTray();
+                return;
+            }
+
+            _exitRequested = true;
+            _autoConnectTimer.Stop();
+            _trayIcon.Visible = false;
             CloseFullScreenMonitor();
             DisconnectSilent();
             _lastScreenImage?.Dispose();
+            _trayIcon.Dispose();
+            _trayMenu.Dispose();
         };
     }
 
@@ -857,6 +890,264 @@ public sealed class ReceiverForm : Form
         _batchReceivedBytes = 0;
     }
 
+    private void LoadAutoConfig()
+    {
+        string configFile = FindConfigFile();
+
+        try
+        {
+            if (!File.Exists(configFile))
+            {
+                _autoConfig = ReceiverAutoConfig.CreateDefault();
+                SaveAutoConfig(configFile, _autoConfig);
+                AddLog($"Created config: {configFile}");
+                return;
+            }
+
+            string json = File.ReadAllText(configFile, Encoding.UTF8);
+            ReceiverAutoConfig? loaded = JsonSerializer.Deserialize<ReceiverAutoConfig>(json);
+
+            _autoConfig = loaded ?? ReceiverAutoConfig.CreateDefault();
+            _autoConfig.Normalize();
+            AddLog($"Loaded config: {configFile}");
+        }
+        catch (Exception ex)
+        {
+            _autoConfig = ReceiverAutoConfig.CreateDefault();
+            AddLog($"Config load failed. Defaults used: {ex.Message}");
+        }
+    }
+
+    private static string FindConfigFile()
+    {
+        string baseDir = AppContext.BaseDirectory;
+        string outputConfig = Path.Combine(baseDir, "receiver_config.json");
+
+        if (File.Exists(outputConfig))
+        {
+            return outputConfig;
+        }
+
+        string projectConfig = Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "receiver_config.json"));
+
+        if (File.Exists(projectConfig))
+        {
+            return projectConfig;
+        }
+
+        string currentConfig = Path.Combine(Environment.CurrentDirectory, "receiver_config.json");
+
+        if (File.Exists(currentConfig))
+        {
+            return currentConfig;
+        }
+
+        return outputConfig;
+    }
+
+    private static void SaveAutoConfig(string path, ReceiverAutoConfig config)
+    {
+        string? directory = Path.GetDirectoryName(path);
+
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        string json = JsonSerializer.Serialize(config, new JsonSerializerOptions
+        {
+            WriteIndented = true,
+        });
+
+        File.WriteAllText(path, json, Encoding.UTF8);
+    }
+
+    private void ApplyAutoConfigToUi()
+    {
+        if (_autoConfig.Servers.Count > 0)
+        {
+            _hostBox.Text = _autoConfig.Servers[0].Host;
+            _portBox.Text = _autoConfig.Servers[0].Port.ToString();
+        }
+
+        _autoFullScreenCheck.Checked = _autoConfig.AutoFullScreenOnFirstFrame;
+    }
+
+    private void BuildTraySupport()
+    {
+        _trayMenu.Items.Clear();
+
+        _trayMenu.Items.Add("Show receiver", null, (_, _) => RestoreFromTray());
+        _trayMenu.Items.Add("Reconnect", null, async (_, _) =>
+        {
+            _manualDisconnect = false;
+            DisconnectSilent();
+            await TryAutoConnectOnceAsync(force: true);
+        });
+        _trayMenu.Items.Add("Disconnect", null, (_, _) => DisconnectByUser());
+        _trayMenu.Items.Add("Exit", null, (_, _) => ExitApplication());
+
+        _trayIcon.Text = "LAN Receiver";
+        _trayIcon.Icon = SystemIcons.Application;
+        _trayIcon.ContextMenuStrip = _trayMenu;
+        _trayIcon.Visible = true;
+        _trayIcon.DoubleClick += (_, _) => RestoreFromTray();
+
+        _autoConnectTimer.Interval = Math.Max(1000, _autoConfig.RetryIntervalSeconds * 1000);
+        _autoConnectTimer.Tick += async (_, _) => await TryAutoConnectOnceAsync(force: false);
+    }
+
+    private async Task StartAutoConnectOnShownAsync()
+    {
+        if (_autoConfig.StartMinimizedToTray)
+        {
+            HideToTray();
+        }
+
+        if (_autoConfig.AutoConnectEnabled)
+        {
+            ScheduleAutoReconnect();
+            await TryAutoConnectOnceAsync(force: false);
+        }
+    }
+
+    private async Task TryAutoConnectOnceAsync(bool force)
+    {
+        if (IsDisposed || _exitRequested || _autoConnectLoopRunning)
+        {
+            return;
+        }
+
+        if (_client is not null)
+        {
+            _autoConnectTimer.Stop();
+            return;
+        }
+
+        if (!force && !_autoConfig.AutoConnectEnabled && !_autoConfig.AutoReconnectEnabled)
+        {
+            return;
+        }
+
+        List<ServerEndpoint> servers = _autoConfig.Servers
+            .Where(x => !string.IsNullOrWhiteSpace(x.Host) && x.Port > 0 && x.Port <= 65535)
+            .ToList();
+
+        if (servers.Count == 0)
+        {
+            AddLog("No valid server endpoint in receiver_config.json.");
+            return;
+        }
+
+        _autoConnectLoopRunning = true;
+        _autoConnectTimer.Stop();
+
+        try
+        {
+            for (int i = 0; i < servers.Count && _client is null; i++)
+            {
+                ServerEndpoint server = servers[_nextServerIndex % servers.Count];
+                _nextServerIndex = (_nextServerIndex + 1) % servers.Count;
+
+                SetConnectionInputs(server);
+                AddLog($"Auto connect try: {server.Host}:{server.Port}");
+
+                await ConnectAsync();
+
+                if (_client is not null)
+                {
+                    AddLog($"Auto connect succeeded: {server.Host}:{server.Port}");
+                    return;
+                }
+
+                await Task.Delay(300);
+            }
+        }
+        finally
+        {
+            _autoConnectLoopRunning = false;
+
+            if (_client is null && !_exitRequested && (_autoConfig.AutoConnectEnabled || _autoConfig.AutoReconnectEnabled))
+            {
+                ScheduleAutoReconnect();
+            }
+        }
+    }
+
+    private void SetConnectionInputs(ServerEndpoint server)
+    {
+        if (InvokeRequired)
+        {
+            Invoke(new Action(() => SetConnectionInputs(server)));
+            return;
+        }
+
+        _hostBox.Text = server.Host;
+        _portBox.Text = server.Port.ToString();
+    }
+
+    private void ScheduleAutoReconnect()
+    {
+        if (IsDisposed || _exitRequested)
+        {
+            return;
+        }
+
+        if (_manualDisconnect)
+        {
+            return;
+        }
+
+        if (!_autoConfig.AutoReconnectEnabled && !_autoConfig.AutoConnectEnabled)
+        {
+            return;
+        }
+
+        if (_client is not null)
+        {
+            return;
+        }
+
+        _autoConnectTimer.Interval = Math.Max(1000, _autoConfig.RetryIntervalSeconds * 1000);
+        _autoConnectTimer.Start();
+    }
+
+    private void HideToTray()
+    {
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        Hide();
+        ShowInTaskbar = false;
+        _trayIcon.Visible = true;
+    }
+
+    private void RestoreFromTray()
+    {
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        Show();
+        ShowInTaskbar = true;
+
+        if (WindowState == FormWindowState.Minimized)
+        {
+            WindowState = FormWindowState.Normal;
+        }
+
+        Activate();
+    }
+
+    private void ExitApplication()
+    {
+        _exitRequested = true;
+        _trayIcon.Visible = false;
+        Close();
+    }
     private void ChooseSaveFolder()
     {
         using var dialog = new FolderBrowserDialog
@@ -981,6 +1272,7 @@ public sealed class ReceiverForm : Form
         _client = null;
 
         SetConnectedUi(false, "Disconnected");
+        ScheduleAutoReconnect();
     }
 
     private void SetConnectedUi(bool connected, string status)
@@ -1131,6 +1423,67 @@ public sealed class ReceiverForm : Form
     }
 }
 
+public sealed class ReceiverAutoConfig
+{
+    public bool AutoConnectEnabled { get; set; } = true;
+
+    public bool AutoReconnectEnabled { get; set; } = true;
+
+    public int RetryIntervalSeconds { get; set; } = 5;
+
+    public bool CloseButtonToTray { get; set; } = true;
+
+    public bool MinimizeToTray { get; set; } = true;
+
+    public bool StartMinimizedToTray { get; set; } = false;
+
+    public bool AutoFullScreenOnFirstFrame { get; set; } = true;
+
+    public List<ServerEndpoint> Servers { get; set; } = new()
+    {
+        new ServerEndpoint
+        {
+            Host = "127.0.0.1",
+            Port = 50000,
+        },
+    };
+
+    public static ReceiverAutoConfig CreateDefault()
+    {
+        return new ReceiverAutoConfig();
+    }
+
+    public void Normalize()
+    {
+        if (RetryIntervalSeconds < 1)
+        {
+            RetryIntervalSeconds = 5;
+        }
+
+        Servers ??= new List<ServerEndpoint>();
+
+        if (Servers.Count == 0)
+        {
+            Servers.Add(new ServerEndpoint
+            {
+                Host = "127.0.0.1",
+                Port = 50000,
+            });
+        }
+    }
+}
+
+public sealed class ServerEndpoint
+{
+    public string Host { get; set; } = "127.0.0.1";
+
+    public int Port { get; set; } = 50000;
+
+    public override string ToString()
+    {
+        return $"{Host}:{Port}";
+    }
+}
 public sealed class FileReceiveSession : IDisposable
 {
     public string FileName { get; init; } = "";

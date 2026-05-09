@@ -1,0 +1,15 @@
+{
+  "AutoConnectEnabled": true,
+  "AutoReconnectEnabled": true,
+  "RetryIntervalSeconds": 5,
+  "CloseButtonToTray": true,
+  "MinimizeToTray": true,
+  "StartMinimizedToTray": true,
+  "AutoFullScreenOnFirstFrame": true,
+  "Servers": [
+    {
+      "Host": "127.0.0.1",
+      "Port": 50000
+    }
+  ]
+}
