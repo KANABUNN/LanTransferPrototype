@@ -8,6 +8,7 @@
 *.ps1
 _backup*
 *.bak_*
+files/
 
 # User-specific files
 *.rsuser

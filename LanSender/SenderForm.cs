@@ -371,10 +371,18 @@ public sealed partial class SenderForm : Form
                     break;
                 }
 
-                if (packet.Value.Type != PacketType.KeepAlive)
+                if (packet.Value.Type == PacketType.KeepAlive)
                 {
-                    AddLog($"クライアントからの受信を破棄: {connection.DisplayName} / {PacketType.ToName(packet.Value.Type)}");
+                    continue;
                 }
+
+                if (packet.Value.Type == PacketType.OpenTargetResult)
+                {
+                    HandleOpenTargetResult(connection, packet.Value.Payload);
+                    continue;
+                }
+
+                AddLog($"クライアントからの受信を破棄: {connection.DisplayName} / {PacketType.ToName(packet.Value.Type)}");
             }
         }
         catch (OperationCanceledException)
@@ -398,6 +406,27 @@ public sealed partial class SenderForm : Form
         finally
         {
             RemoveClient(connection);
+        }
+    }
+
+    private void HandleOpenTargetResult(ClientConnection connection, byte[] payload)
+    {
+        try
+        {
+            OpenTargetResult? result = JsonSerializer.Deserialize<OpenTargetResult>(payload);
+
+            if (result is null)
+            {
+                AddLog($"Open target result parse failed: {connection.DisplayName}");
+                return;
+            }
+
+            string status = result.Success ? "OK" : "FAIL";
+            AddLog($"Open target result [{status}]: {connection.DisplayName} / {result.TargetType} / {result.DisplayName} / {result.Message}");
+        }
+        catch (Exception ex)
+        {
+            AddLog($"Open target result receive failed: {connection.DisplayName} / {ex.Message}");
         }
     }
 
