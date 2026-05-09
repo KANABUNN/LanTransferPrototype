@@ -37,6 +37,8 @@ public sealed class ScreenVideoStreamer
         var statsStopwatch = Stopwatch.StartNew();
 
         double lastCaptureMs = 0;
+        double lastCopyMs = 0;
+        double lastEncodeMs = 0;
         double lastSendMs = 0;
         double lastLoopMs = 0;
 
@@ -61,10 +63,10 @@ public sealed class ScreenVideoStreamer
                 }
             }
 
-            var captureStopwatch = Stopwatch.StartNew();
             ScreenFrame frame = _captureService.CaptureVirtualScreenJpeg(streamId, ++frameNo, quality, scalePercent);
-            captureStopwatch.Stop();
-            lastCaptureMs = captureStopwatch.Elapsed.TotalMilliseconds;
+            lastCaptureMs = frame.CaptureMs;
+            lastCopyMs = frame.CopyMs;
+            lastEncodeMs = frame.EncodeMs;
 
             var sendStopwatch = Stopwatch.StartNew();
             int successClients = await sendFrameAsync(frame, token);
@@ -96,6 +98,8 @@ public sealed class ScreenVideoStreamer
                     targetFps,
                     scalePercent,
                     lastCaptureMs,
+                    lastCopyMs,
+                    lastEncodeMs,
                     lastSendMs,
                     lastLoopMs,
                     droppedScheduleFrames));
@@ -128,6 +132,8 @@ public sealed record ScreenStreamStats(
     int TargetFps,
     int ScalePercent,
     double CaptureMs,
+    double CopyMs,
+    double EncodeMs,
     double SendMs,
     double LoopMs,
     long DroppedScheduleFrames);

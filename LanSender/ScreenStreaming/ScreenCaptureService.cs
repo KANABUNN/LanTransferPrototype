@@ -1,4 +1,5 @@
-﻿using System.Drawing.Drawing2D;
+﻿using System.Diagnostics;
+using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using LanShared.Contracts;
@@ -21,26 +22,33 @@ public sealed class ScreenCaptureService
         jpegQuality = Math.Clamp(jpegQuality, 20, 95);
         scalePercent = Math.Clamp(scalePercent, 25, 100);
 
-        using var sourceBitmap = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format24bppRgb);
-
-        using (Graphics graphics = Graphics.FromImage(sourceBitmap))
-        {
-            graphics.CopyFromScreen(bounds.Left, bounds.Top, 0, 0, bounds.Size, CopyPixelOperation.SourceCopy);
-            DrawCursorIfAvailable(graphics, bounds);
-        }
-
         int outputWidth = Math.Max(1, bounds.Width * scalePercent / 100);
         int outputHeight = Math.Max(1, bounds.Height * scalePercent / 100);
 
-        using Bitmap outputBitmap = scalePercent == 100
-            ? new Bitmap(sourceBitmap)
-            : ResizeForStreaming(sourceBitmap, outputWidth, outputHeight);
+        var totalStopwatch = Stopwatch.StartNew();
+        double copyMs;
+        double encodeMs;
 
-        using var memory = new MemoryStream();
+        using var outputBitmap = new Bitmap(outputWidth, outputHeight, PixelFormat.Format24bppRgb);
 
-        using var parameters = new EncoderParameters(1);
-        parameters.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, jpegQuality);
-        outputBitmap.Save(memory, JpegCodec, parameters);
+        var copyStopwatch = Stopwatch.StartNew();
+        CaptureAndScaleDesktop(bounds, outputBitmap);
+        DrawCursorIfAvailable(outputBitmap, bounds, scalePercent);
+        copyStopwatch.Stop();
+        copyMs = copyStopwatch.Elapsed.TotalMilliseconds;
+
+        using var memory = new MemoryStream(Math.Max(64 * 1024, outputWidth * outputHeight / 8));
+
+        var encodeStopwatch = Stopwatch.StartNew();
+        using (var parameters = new EncoderParameters(1))
+        {
+            parameters.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, jpegQuality);
+            outputBitmap.Save(memory, JpegCodec, parameters);
+        }
+        encodeStopwatch.Stop();
+        encodeMs = encodeStopwatch.Elapsed.TotalMilliseconds;
+
+        totalStopwatch.Stop();
 
         var info = new ScreenFrameInfo
         {
@@ -53,25 +61,56 @@ public sealed class ScreenCaptureService
             CapturedAtUtc = DateTime.UtcNow,
         };
 
-        return new ScreenFrame(info, memory.ToArray());
+        return new ScreenFrame(info, memory.ToArray(), totalStopwatch.Elapsed.TotalMilliseconds, copyMs, encodeMs);
     }
 
-    private static Bitmap ResizeForStreaming(Bitmap source, int width, int height)
+    private static void CaptureAndScaleDesktop(Rectangle sourceBounds, Bitmap destination)
     {
-        var resized = new Bitmap(width, height, PixelFormat.Format24bppRgb);
-
-        using Graphics graphics = Graphics.FromImage(resized);
+        using Graphics graphics = Graphics.FromImage(destination);
         graphics.CompositingMode = CompositingMode.SourceCopy;
         graphics.CompositingQuality = CompositingQuality.HighSpeed;
-        graphics.InterpolationMode = InterpolationMode.Low;
+        graphics.InterpolationMode = InterpolationMode.NearestNeighbor;
         graphics.SmoothingMode = SmoothingMode.None;
         graphics.PixelOffsetMode = PixelOffsetMode.HighSpeed;
 
-        graphics.DrawImage(source, new Rectangle(0, 0, width, height));
-        return resized;
+        IntPtr desktopDc = GetDC(IntPtr.Zero);
+        if (desktopDc == IntPtr.Zero)
+        {
+            throw new InvalidOperationException("GetDC failed while capturing desktop.");
+        }
+
+        IntPtr targetDc = graphics.GetHdc();
+
+        try
+        {
+            SetStretchBltMode(targetDc, COLORONCOLOR);
+
+            bool ok = StretchBlt(
+                targetDc,
+                0,
+                0,
+                destination.Width,
+                destination.Height,
+                desktopDc,
+                sourceBounds.Left,
+                sourceBounds.Top,
+                sourceBounds.Width,
+                sourceBounds.Height,
+                SRCCOPY | CAPTUREBLT);
+
+            if (!ok)
+            {
+                throw new InvalidOperationException($"StretchBlt failed. Win32Error={Marshal.GetLastWin32Error()}");
+            }
+        }
+        finally
+        {
+            graphics.ReleaseHdc(targetDc);
+            ReleaseDC(IntPtr.Zero, desktopDc);
+        }
     }
 
-    private static void DrawCursorIfAvailable(Graphics graphics, Rectangle screenBounds)
+    private static void DrawCursorIfAvailable(Bitmap destination, Rectangle screenBounds, int scalePercent)
     {
         CURSORINFO cursorInfo = new()
         {
@@ -88,13 +127,19 @@ public sealed class ScreenCaptureService
             return;
         }
 
+        double scaleX = destination.Width / (double)screenBounds.Width;
+        double scaleY = destination.Height / (double)screenBounds.Height;
+
+        int x = (int)Math.Round((cursorInfo.ptScreenPos.X - screenBounds.Left) * scaleX);
+        int y = (int)Math.Round((cursorInfo.ptScreenPos.Y - screenBounds.Top) * scaleY);
+        int cursorSize = Math.Max(10, 32 * Math.Clamp(scalePercent, 25, 100) / 100);
+
+        using Graphics graphics = Graphics.FromImage(destination);
         IntPtr hdc = graphics.GetHdc();
 
         try
         {
-            int x = cursorInfo.ptScreenPos.X - screenBounds.Left;
-            int y = cursorInfo.ptScreenPos.Y - screenBounds.Top;
-            DrawIcon(hdc, x, y, cursorInfo.hCursor);
+            DrawIconEx(hdc, x, y, cursorInfo.hCursor, cursorSize, cursorSize, 0, IntPtr.Zero, DI_NORMAL);
         }
         finally
         {
@@ -102,7 +147,11 @@ public sealed class ScreenCaptureService
         }
     }
 
+    private const int COLORONCOLOR = 3;
+    private const int SRCCOPY = 0x00CC0020;
+    private const int CAPTUREBLT = 0x40000000;
     private const int CURSOR_SHOWING = 0x00000001;
+    private const int DI_NORMAL = 0x0003;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct CURSORINFO
@@ -121,20 +170,63 @@ public sealed class ScreenCaptureService
     }
 
     [DllImport("user32.dll")]
+    private static extern IntPtr GetDC(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    private static extern bool StretchBlt(
+        IntPtr hdcDest,
+        int xDest,
+        int yDest,
+        int wDest,
+        int hDest,
+        IntPtr hdcSrc,
+        int xSrc,
+        int ySrc,
+        int wSrc,
+        int hSrc,
+        int rop);
+
+    [DllImport("gdi32.dll")]
+    private static extern int SetStretchBltMode(IntPtr hdc, int mode);
+
+    [DllImport("user32.dll")]
     private static extern bool GetCursorInfo(ref CURSORINFO pci);
 
     [DllImport("user32.dll")]
-    private static extern bool DrawIcon(IntPtr hDC, int x, int y, IntPtr hIcon);
+    private static extern bool DrawIconEx(
+        IntPtr hdc,
+        int xLeft,
+        int yTop,
+        IntPtr hIcon,
+        int cxWidth,
+        int cyWidth,
+        int istepIfAniCur,
+        IntPtr hbrFlickerFreeDraw,
+        int diFlags);
 }
 
 public sealed class ScreenFrame
 {
     public ScreenFrameInfo Info { get; }
     public byte[] ImageBytes { get; }
+    public double CaptureMs { get; }
+    public double CopyMs { get; }
+    public double EncodeMs { get; }
 
     public ScreenFrame(ScreenFrameInfo info, byte[] imageBytes)
+        : this(info, imageBytes, 0, 0, 0)
+    {
+    }
+
+    public ScreenFrame(ScreenFrameInfo info, byte[] imageBytes, double captureMs, double copyMs, double encodeMs)
     {
         Info = info;
         ImageBytes = imageBytes;
+        CaptureMs = captureMs;
+        CopyMs = copyMs;
+        EncodeMs = encodeMs;
     }
 }
