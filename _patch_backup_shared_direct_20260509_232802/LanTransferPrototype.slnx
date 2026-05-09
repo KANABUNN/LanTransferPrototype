@@ -1,5 +1,0 @@
-<Solution>
-  <Project Path="LanShared/LanShared.csproj" />
-  <Project Path="LanReceiver/LanReceiver.csproj" />
-  <Project Path="LanSender/LanSender.csproj" />
-</Solution>
