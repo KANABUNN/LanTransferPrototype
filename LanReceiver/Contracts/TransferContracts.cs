@@ -10,6 +10,8 @@ public sealed class FileStartInfo
 {
     public string FileName { get; set; } = "";
     public long FileSize { get; set; }
+    public bool OpenAfterReceive { get; set; }
+    public string OpenRequestId { get; set; } = "";
 }
 
 public sealed class TransferCancelInfo

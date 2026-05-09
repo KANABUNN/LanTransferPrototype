@@ -33,6 +33,14 @@ public sealed partial class ReceiverForm : Form
     private readonly PictureBox _screenPicture = new();
     private readonly ListBox _messageList = new();
     private readonly ListBox _logList = new();
+    private readonly NotifyIcon _trayIcon = new();
+    private readonly ContextMenuStrip _trayMenu = new();
+    private readonly System.Windows.Forms.Timer _autoConnectTimer = new();
+
+    private ReceiverAutoConfig _autoConfig = ReceiverAutoConfig.CreateDefault();
+    private int _nextServerIndex;
+    private bool _exitRequested;
+    private bool _autoConnectLoopRunning;
 
     private TcpClient? _client;
     private CancellationTokenSource? _cts;
@@ -60,6 +68,19 @@ public sealed partial class ReceiverForm : Form
 
         BuildUi();
         InitializeOpenTargetFeature();
+        LoadAutoConfig();
+        ApplyAutoConfigToUi();
+        BuildTraySupport();
+
+        Shown += async (_, _) => await StartAutoConnectOnShownAsync();
+
+        Resize += (_, _) =>
+        {
+            if (WindowState == FormWindowState.Minimized && _autoConfig.MinimizeToTray)
+            {
+                HideToTray();
+            }
+        };
 
         _connectButton.Click += async (_, _) => await ConnectAsync();
         _disconnectButton.Click += (_, _) => DisconnectByUser();
@@ -68,11 +89,23 @@ public sealed partial class ReceiverForm : Form
         _openFolderButton.Click += (_, _) => OpenSaveFolder();
         _openFullScreenButton.Click += (_, _) => OpenFullScreenMonitor();
 
-        FormClosing += (_, _) =>
+        FormClosing += (_, e) =>
         {
+            if (!_exitRequested && _autoConfig.CloseButtonToTray)
+            {
+                e.Cancel = true;
+                HideToTray();
+                return;
+            }
+
+            _exitRequested = true;
+            _autoConnectTimer.Stop();
+            _trayIcon.Visible = false;
             CloseFullScreenMonitor();
             DisconnectSilent();
             _lastScreenImage?.Dispose();
+            _trayIcon.Dispose();
+            _trayMenu.Dispose();
         };
     }
 
@@ -101,7 +134,7 @@ public sealed partial class ReceiverForm : Form
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 27));
 
         var connectPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
-        connectPanel.Controls.Add(new Label { Text = "送信側IP:", AutoSize = true, Padding = new Padding(0, 8, 0, 0) });
+        connectPanel.Controls.Add(new Label { Text = "Sender IP:", AutoSize = true, Padding = new Padding(0, 8, 0, 0) });
         _hostBox.Text = "127.0.0.1";
         _hostBox.Width = 160;
         connectPanel.Controls.Add(_hostBox);
@@ -111,17 +144,17 @@ public sealed partial class ReceiverForm : Form
         _portBox.Width = 100;
         connectPanel.Controls.Add(_portBox);
 
-        _connectButton.Text = "接続";
+        _connectButton.Text = "Connect";
         _connectButton.Width = 90;
         connectPanel.Controls.Add(_connectButton);
 
-        _disconnectButton.Text = "切断";
-        _disconnectButton.Width = 90;
+        _disconnectButton.Text = "Disconnect";
+        _disconnectButton.Width = 105;
         _disconnectButton.Enabled = false;
         connectPanel.Controls.Add(_disconnectButton);
 
-        _clearButton.Text = "表示クリア";
-        _clearButton.Width = 105;
+        _clearButton.Text = "Clear";
+        _clearButton.Width = 90;
         connectPanel.Controls.Add(_clearButton);
         root.Controls.Add(connectPanel, 0, 0);
 
@@ -131,32 +164,32 @@ public sealed partial class ReceiverForm : Form
         savePanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
         savePanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
 
-        savePanel.Controls.Add(new Label { Text = "保存先:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
+        savePanel.Controls.Add(new Label { Text = "Save to:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
         _saveFolderBox.Text = defaultFolder;
         _saveFolderBox.Dock = DockStyle.Fill;
         _saveFolderBox.ReadOnly = true;
         savePanel.Controls.Add(_saveFolderBox, 1, 0);
 
-        _chooseFolderButton.Text = "選択";
+        _chooseFolderButton.Text = "Choose";
         _chooseFolderButton.Dock = DockStyle.Fill;
         savePanel.Controls.Add(_chooseFolderButton, 2, 0);
 
-        _openFolderButton.Text = "開く";
+        _openFolderButton.Text = "Open";
         _openFolderButton.Dock = DockStyle.Fill;
         savePanel.Controls.Add(_openFolderButton, 3, 0);
         root.Controls.Add(savePanel, 0, 1);
 
         var optionPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
-        _openFolderAfterReceiveCheck.Text = "受信後に保存先を開く";
+        _openFolderAfterReceiveCheck.Text = "Open save folder after receiving files";
         _openFolderAfterReceiveCheck.AutoSize = true;
         optionPanel.Controls.Add(_openFolderAfterReceiveCheck);
 
-        _autoFullScreenCheck.Text = "最初の画面フレーム受信時に全画面表示";
+        _autoFullScreenCheck.Text = "Auto full screen on first screen frame";
         _autoFullScreenCheck.AutoSize = true;
         _autoFullScreenCheck.Checked = true;
         optionPanel.Controls.Add(_autoFullScreenCheck);
 
-        _openFullScreenButton.Text = "全画面";
+        _openFullScreenButton.Text = "Full screen";
         _openFullScreenButton.Width = 110;
         optionPanel.Controls.Add(_openFullScreenButton);
         root.Controls.Add(optionPanel, 0, 2);
@@ -166,12 +199,12 @@ public sealed partial class ReceiverForm : Form
         statusPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 20));
         statusPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        _statusLabel.Text = "未接続";
+        _statusLabel.Text = "Disconnected";
         _statusLabel.Dock = DockStyle.Fill;
         _statusLabel.TextAlign = ContentAlignment.MiddleLeft;
         statusPanel.Controls.Add(_statusLabel, 0, 0);
 
-        _progressLabel.Text = "待機中";
+        _progressLabel.Text = "Idle";
         _progressLabel.Dock = DockStyle.Fill;
         _progressLabel.TextAlign = ContentAlignment.MiddleLeft;
         statusPanel.Controls.Add(_progressLabel, 0, 1);
@@ -182,12 +215,12 @@ public sealed partial class ReceiverForm : Form
         statusPanel.Controls.Add(_progressBar, 0, 2);
         root.Controls.Add(statusPanel, 0, 3);
 
-        var screenGroup = new GroupBox { Text = "画面配信プレビュー", Dock = DockStyle.Fill };
+        var screenGroup = new GroupBox { Text = "Screen monitor preview", Dock = DockStyle.Fill };
         var screenLayout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1, Padding = new Padding(8) };
         screenLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
         screenLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        _screenInfoLabel.Text = "画面フレーム未受信";
+        _screenInfoLabel.Text = "No screen frame received.";
         _screenInfoLabel.Dock = DockStyle.Fill;
         _screenInfoLabel.TextAlign = ContentAlignment.MiddleLeft;
         screenLayout.Controls.Add(_screenInfoLabel, 0, 0);
@@ -199,12 +232,12 @@ public sealed partial class ReceiverForm : Form
         screenGroup.Controls.Add(screenLayout);
         root.Controls.Add(screenGroup, 0, 4);
 
-        var messageGroup = new GroupBox { Text = "受信メッセージ・ファイル", Dock = DockStyle.Fill };
+        var messageGroup = new GroupBox { Text = "Received messages / files", Dock = DockStyle.Fill };
         _messageList.Dock = DockStyle.Fill;
         messageGroup.Controls.Add(_messageList);
         root.Controls.Add(messageGroup, 0, 5);
 
-        var logGroup = new GroupBox { Text = "ログ", Dock = DockStyle.Fill };
+        var logGroup = new GroupBox { Text = "Log", Dock = DockStyle.Fill };
         _logList.Dock = DockStyle.Fill;
         logGroup.Controls.Add(_logList);
         root.Controls.Add(logGroup, 0, 6);
@@ -216,20 +249,20 @@ public sealed partial class ReceiverForm : Form
     {
         if (_client is not null)
         {
-            AddLog("すでに接続されています。");
+            AddLog("Already connected.");
             return;
         }
 
         string host = _hostBox.Text.Trim();
         if (string.IsNullOrWhiteSpace(host))
         {
-            AddLog("送信側IPを入力してください。");
+            AddLog("Enter sender IP.");
             return;
         }
 
         if (!int.TryParse(_portBox.Text, out int port) || port < 1 || port > 65535)
         {
-            AddLog("ポート番号が不正です。");
+            AddLog("Invalid port number.");
             return;
         }
 
@@ -240,14 +273,15 @@ public sealed partial class ReceiverForm : Form
             await _client.ConnectAsync(host, port);
 
             _cts = new CancellationTokenSource();
-            SetConnectedUi(true, $"接続中: {host}:{port}");
-            AddLog($"接続しました: {host}:{port}");
+            SetConnectedUi(true, $"Connected: {host}:{port}");
+            AddLog($"Connected: {host}:{port}");
+            _autoConnectTimer.Stop();
 
             _ = Task.Run(() => ReceiveLoopAsync(_cts.Token));
         }
         catch (Exception ex)
         {
-            AddLog($"接続失敗: {ex.Message}");
+            AddLog($"Connection failed: {ex.Message}");
             DisconnectSilent();
         }
     }
@@ -270,7 +304,7 @@ public sealed partial class ReceiverForm : Form
                 {
                     if (!_manualDisconnect)
                     {
-                        AddLog("送信側から切断されました。");
+                        AddLog("Sender disconnected.");
                     }
                     break;
                 }
@@ -288,21 +322,21 @@ public sealed partial class ReceiverForm : Form
         {
             if (!_manualDisconnect)
             {
-                AddLog("通信が終了しました。");
+                AddLog("Communication ended.");
             }
         }
         catch (SocketException)
         {
             if (!_manualDisconnect)
             {
-                AddLog("通信が終了しました。");
+                AddLog("Communication ended.");
             }
         }
         catch (Exception ex)
         {
             if (!_manualDisconnect)
             {
-                AddLog($"受信エラー: {ex.Message}");
+                AddLog($"Receive error: {ex.Message}");
             }
         }
         finally
@@ -318,7 +352,7 @@ public sealed partial class ReceiverForm : Form
         switch (packet.Type)
         {
             case PacketType.TextMessage:
-                AddMessage($"メッセージ: {Encoding.UTF8.GetString(packet.Payload)}");
+                AddMessage($"Message: {Encoding.UTF8.GetString(packet.Payload)}");
                 break;
 
             case PacketType.BatchStart:
@@ -358,11 +392,11 @@ public sealed partial class ReceiverForm : Form
                 break;
 
             case PacketType.OpenTarget:
-                AddLog("OpenTarget はこの分離版では未実装です。");
+                await HandleOpenTargetCommandAsync(packet.Payload);
                 break;
 
             default:
-                AddLog($"未対応パケット: {packet.Type}");
+                AddLog($"Unsupported packet: {PacketType.ToName(packet.Type)}");
                 break;
         }
     }
@@ -374,17 +408,17 @@ public sealed partial class ReceiverForm : Form
             ScreenVideoStartInfo? info = JsonSerializer.Deserialize<ScreenVideoStartInfo>(payload);
             if (info is null)
             {
-                AddLog("画面配信開始情報を解析できません。");
+                AddLog("Screen video start metadata parse failed.");
                 return;
             }
 
             _activeStreamId = info.StreamId;
-            UpdateScreenInfo($"画面配信開始: {info.Fps}fps / {info.Quality}% / {info.Format}");
-            AddLog($"画面配信開始: stream={info.StreamId}");
+            UpdateScreenInfo($"Screen video started: {info.Fps}fps / {info.Quality}% / {info.Format}");
+            AddLog($"Screen video started: stream={info.StreamId}");
         }
         catch (Exception ex)
         {
-            AddLog($"画面配信開始情報の受信に失敗: {ex.Message}");
+            AddLog($"Screen video start failed: {ex.Message}");
         }
     }
 
@@ -397,7 +431,7 @@ public sealed partial class ReceiverForm : Form
         }
         catch (Exception ex)
         {
-            AddLog($"画面フレーム受信失敗: {ex.Message}");
+            AddLog($"Screen frame receive failed: {ex.Message}");
         }
     }
 
@@ -417,8 +451,8 @@ public sealed partial class ReceiverForm : Form
         }
 
         _activeStreamId = null;
-        UpdateScreenInfo($"画面配信停止: {reason}");
-        AddLog($"画面配信停止: {reason}");
+        UpdateScreenInfo($"Screen video stopped: {reason}");
+        AddLog($"Screen video stopped: {reason}");
     }
 
     private void UpdateScreenFrame(Image frameImage, ScreenFrameInfo info, int byteSize)
@@ -461,7 +495,7 @@ public sealed partial class ReceiverForm : Form
         BatchStartInfo? info = JsonSerializer.Deserialize<BatchStartInfo>(payload);
         if (info is null || info.FileCount < 0 || info.TotalSize < 0)
         {
-            AddLog("バッチ開始情報が不正です。");
+            AddLog("Invalid batch start data.");
             return;
         }
 
@@ -472,8 +506,8 @@ public sealed partial class ReceiverForm : Form
         _batchReceivedBytes = 0;
         _batchStopwatch.Restart();
 
-        UpdateProgress(0, Math.Max(_batchExpectedBytes, 1), $"受信開始: {_batchExpectedFiles} files / {FormatBytes(_batchExpectedBytes)}");
-        AddLog($"受信開始: {_batchExpectedFiles} files / {FormatBytes(_batchExpectedBytes)}");
+        UpdateProgress(0, Math.Max(_batchExpectedBytes, 1), $"Batch receive start: {_batchExpectedFiles} files / {FormatBytes(_batchExpectedBytes)}");
+        AddLog($"Batch receive start: {_batchExpectedFiles} files / {FormatBytes(_batchExpectedBytes)}");
     }
 
     private void StartFileReceive(byte[] payload)
@@ -483,7 +517,7 @@ public sealed partial class ReceiverForm : Form
         FileStartInfo? info = JsonSerializer.Deserialize<FileStartInfo>(payload);
         if (info is null || string.IsNullOrWhiteSpace(info.FileName) || info.FileSize < 0)
         {
-            AddLog("ファイル開始情報が不正です。");
+            AddLog("Invalid file start data.");
             return;
         }
 
@@ -508,18 +542,20 @@ public sealed partial class ReceiverForm : Form
             FinalPath = finalPath,
             TempPath = tempPath,
             FileSize = info.FileSize,
+            OpenAfterReceive = info.OpenAfterReceive,
+            OpenRequestId = info.OpenRequestId,
             Stream = stream,
         };
 
-        UpdateProgress(_batchReceivedBytes, Math.Max(_batchExpectedBytes > 0 ? _batchExpectedBytes : info.FileSize, 1), $"受信中: {safeRelativePath}");
-        AddLog($"ファイル受信開始: {safeRelativePath} / {FormatBytes(info.FileSize)}");
+        UpdateProgress(_batchReceivedBytes, Math.Max(_batchExpectedBytes > 0 ? _batchExpectedBytes : info.FileSize, 1), $"Receiving: {safeRelativePath}");
+        AddLog($"File receive start: {safeRelativePath} / {FormatBytes(info.FileSize)}");
     }
 
     private async Task WriteFileChunkAsync(byte[] payload)
     {
         if (_fileSession is null)
         {
-            AddLog("FileStart 前に FileChunk が到着したため無視しました。");
+            AddLog("File chunk arrived before file start. Ignored.");
             return;
         }
 
@@ -528,9 +564,9 @@ public sealed partial class ReceiverForm : Form
 
         if (_fileSession.ReceivedBytes > _fileSession.FileSize)
         {
-            AddLog("想定サイズを超えたため受信を中止しました。");
+            AddLog("Received file size exceeded expected size. Receive aborted.");
             CloseCurrentFileSession(deleteTempFile: true);
-            UpdateProgress(0, 1, "受信失敗");
+            UpdateProgress(0, 1, "Receive failed");
             return;
         }
 
@@ -539,14 +575,14 @@ public sealed partial class ReceiverForm : Form
         double seconds = Math.Max(_batchStopwatch.Elapsed.TotalSeconds, 0.001);
         long speed = (long)(current / seconds);
 
-        UpdateProgress(current, total, $"受信中: {_fileSession.FileName} / {FormatBytes(current)} / {FormatBytes(total)} / {FormatBytes(speed)}/s");
+        UpdateProgress(current, total, $"Receiving: {_fileSession.FileName} / {FormatBytes(current)} / {FormatBytes(total)} / {FormatBytes(speed)}/s");
     }
 
     private void FinishFileReceive()
     {
         if (_fileSession is null)
         {
-            AddLog("FileEnd が FileStart なしで到着しました。");
+            AddLog("File end arrived without file session.");
             return;
         }
 
@@ -555,6 +591,8 @@ public sealed partial class ReceiverForm : Form
         long fileSize = _fileSession.FileSize;
         string finalPath = _fileSession.FinalPath;
         string tempPath = _fileSession.TempPath;
+        bool openAfterReceive = _fileSession.OpenAfterReceive;
+        string openRequestId = _fileSession.OpenRequestId;
 
         try
         {
@@ -563,9 +601,9 @@ public sealed partial class ReceiverForm : Form
 
             if (receivedBytes != fileSize)
             {
-                AddLog($"サイズ不一致: {fileName} / {FormatBytes(receivedBytes)} / {FormatBytes(fileSize)}");
+                AddLog($"File size mismatch: {fileName} / {FormatBytes(receivedBytes)} / {FormatBytes(fileSize)}");
                 TryDelete(tempPath);
-                UpdateProgress(0, 1, "受信失敗");
+                UpdateProgress(0, 1, "Receive failed");
                 return;
             }
 
@@ -573,12 +611,17 @@ public sealed partial class ReceiverForm : Form
             _batchReceivedFiles++;
             _batchReceivedBytes += receivedBytes;
 
-            AddMessage($"ファイル受信完了: {fileName}");
-            AddLog($"保存しました: {finalPath}");
+            AddMessage($"File received: {fileName}");
+            AddLog($"Saved: {finalPath}");
 
             long displayTotal = _batchActive ? Math.Max(_batchExpectedBytes, 1) : Math.Max(fileSize, 1);
             long displayCurrent = _batchActive ? _batchReceivedBytes : receivedBytes;
-            UpdateProgress(displayCurrent, displayTotal, $"受信完了: {fileName}");
+            UpdateProgress(displayCurrent, displayTotal, $"File received: {fileName}");
+
+            if (openAfterReceive)
+            {
+                _ = OpenReceivedFileAndReportAsync(finalPath, fileName, openRequestId);
+            }
         }
         finally
         {
@@ -592,9 +635,9 @@ public sealed partial class ReceiverForm : Form
         CloseCurrentFileSession(deleteTempFile: true);
         _batchStopwatch.Stop();
 
-        AddMessage($"一括受信完了: {_batchReceivedFiles}/{_batchExpectedFiles} files");
-        AddLog($"一括受信完了: {_batchReceivedFiles}/{_batchExpectedFiles} files / {FormatBytes(_batchReceivedBytes)}");
-        UpdateProgress(1000, 1000, $"一括受信完了: {_batchReceivedFiles}/{_batchExpectedFiles} files");
+        AddMessage($"Batch receive done: {_batchReceivedFiles}/{_batchExpectedFiles} files");
+        AddLog($"Batch receive done: {_batchReceivedFiles}/{_batchExpectedFiles} files / {FormatBytes(_batchReceivedBytes)}");
+        UpdateProgress(1000, 1000, $"Batch receive done: {_batchReceivedFiles}/{_batchExpectedFiles} files");
 
         bool shouldOpen = _openFolderAfterReceiveCheck.Checked;
         ResetBatchState();
@@ -607,7 +650,7 @@ public sealed partial class ReceiverForm : Form
 
     private void HandleTransferCancel(byte[] payload)
     {
-        string reason = "送信側でキャンセルされました。";
+        string reason = "Canceled by sender.";
         try
         {
             TransferCancelInfo? info = JsonSerializer.Deserialize<TransferCancelInfo>(payload);
@@ -622,17 +665,238 @@ public sealed partial class ReceiverForm : Form
 
         CloseCurrentFileSession(deleteTempFile: true);
         ResetBatchState();
-        UpdateProgress(0, 1, "受信キャンセル");
-        AddLog($"受信キャンセル: {reason}");
-        AddMessage($"受信キャンセル: {reason}");
+        UpdateProgress(0, 1, "Receive canceled");
+        AddLog($"Receive canceled: {reason}");
+        AddMessage($"Receive canceled: {reason}");
+    }
+
+    private void LoadAutoConfig()
+    {
+        string configFile = FindConfigFile();
+
+        try
+        {
+            _autoConfig = ReceiverAutoConfig.LoadOrCreate(configFile);
+            AddLog($"Loaded config: {configFile}");
+        }
+        catch (Exception ex)
+        {
+            _autoConfig = ReceiverAutoConfig.CreateDefault();
+            AddLog($"Config load failed. Defaults used: {ex.Message}");
+        }
+    }
+
+    private static string FindConfigFile()
+    {
+        string baseDir = AppContext.BaseDirectory;
+        string outputConfig = Path.Combine(baseDir, "receiver_config.json");
+
+        if (File.Exists(outputConfig))
+        {
+            return outputConfig;
+        }
+
+        string projectConfig = Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "receiver_config.json"));
+        if (File.Exists(projectConfig))
+        {
+            return projectConfig;
+        }
+
+        string currentConfig = Path.Combine(Environment.CurrentDirectory, "receiver_config.json");
+        if (File.Exists(currentConfig))
+        {
+            return currentConfig;
+        }
+
+        return outputConfig;
+    }
+
+    private void ApplyAutoConfigToUi()
+    {
+        if (_autoConfig.Servers.Count > 0)
+        {
+            _hostBox.Text = _autoConfig.Servers[0].Host;
+            _portBox.Text = _autoConfig.Servers[0].Port.ToString();
+        }
+
+        _autoFullScreenCheck.Checked = _autoConfig.AutoFullScreenOnFirstFrame;
+    }
+
+    private void BuildTraySupport()
+    {
+        _trayMenu.Items.Clear();
+        _trayMenu.Items.Add("Show receiver", null, (_, _) => RestoreFromTray());
+        _trayMenu.Items.Add("Reconnect", null, async (_, _) =>
+        {
+            _manualDisconnect = false;
+            DisconnectSilent();
+            await TryAutoConnectOnceAsync(force: true);
+        });
+        _trayMenu.Items.Add("Disconnect", null, (_, _) => DisconnectByUser());
+        _trayMenu.Items.Add("Exit", null, (_, _) => ExitApplication());
+
+        _trayIcon.Text = "LAN Receiver";
+        _trayIcon.Icon = SystemIcons.Application;
+        _trayIcon.ContextMenuStrip = _trayMenu;
+        _trayIcon.Visible = true;
+        _trayIcon.DoubleClick += (_, _) => RestoreFromTray();
+
+        _autoConnectTimer.Interval = Math.Max(1000, _autoConfig.RetryIntervalSeconds * 1000);
+        _autoConnectTimer.Tick += async (_, _) => await TryAutoConnectOnceAsync(force: false);
+    }
+
+    private async Task StartAutoConnectOnShownAsync()
+    {
+        if (_autoConfig.StartMinimizedToTray)
+        {
+            HideToTray();
+        }
+
+        if (_autoConfig.AutoConnectEnabled)
+        {
+            ScheduleAutoReconnect();
+            await TryAutoConnectOnceAsync(force: false);
+        }
+    }
+
+    private async Task TryAutoConnectOnceAsync(bool force)
+    {
+        if (IsDisposed || _exitRequested || _autoConnectLoopRunning)
+        {
+            return;
+        }
+
+        if (_client is not null)
+        {
+            _autoConnectTimer.Stop();
+            return;
+        }
+
+        if (!force && !_autoConfig.AutoConnectEnabled && !_autoConfig.AutoReconnectEnabled)
+        {
+            return;
+        }
+
+        List<ServerEndpoint> servers = _autoConfig.Servers
+            .Where(x => !string.IsNullOrWhiteSpace(x.Host) && x.Port is >= 1 and <= 65535)
+            .ToList();
+
+        if (servers.Count == 0)
+        {
+            AddLog("No valid server endpoint in receiver_config.json.");
+            return;
+        }
+
+        _autoConnectLoopRunning = true;
+        _autoConnectTimer.Stop();
+
+        try
+        {
+            for (int i = 0; i < servers.Count && _client is null; i++)
+            {
+                ServerEndpoint server = servers[_nextServerIndex % servers.Count];
+                _nextServerIndex = (_nextServerIndex + 1) % servers.Count;
+
+                SetConnectionInputs(server);
+                AddLog($"Auto connect try: {server.Host}:{server.Port}");
+                await ConnectAsync();
+
+                if (_client is not null)
+                {
+                    AddLog($"Auto connect succeeded: {server.Host}:{server.Port}");
+                    return;
+                }
+
+                await Task.Delay(300);
+            }
+        }
+        finally
+        {
+            _autoConnectLoopRunning = false;
+
+            if (_client is null && !_exitRequested && !_manualDisconnect && (_autoConfig.AutoConnectEnabled || _autoConfig.AutoReconnectEnabled))
+            {
+                ScheduleAutoReconnect();
+            }
+        }
+    }
+
+    private void SetConnectionInputs(ServerEndpoint server)
+    {
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        if (InvokeRequired)
+        {
+            BeginInvoke(new Action(() => SetConnectionInputs(server)));
+            return;
+        }
+
+        _hostBox.Text = server.Host;
+        _portBox.Text = server.Port.ToString();
+    }
+
+    private void ScheduleAutoReconnect()
+    {
+        if (IsDisposed || _exitRequested || _manualDisconnect || _client is not null)
+        {
+            return;
+        }
+
+        if (!_autoConfig.AutoReconnectEnabled && !_autoConfig.AutoConnectEnabled)
+        {
+            return;
+        }
+
+        _autoConnectTimer.Interval = Math.Max(1000, _autoConfig.RetryIntervalSeconds * 1000);
+        if (!_autoConnectTimer.Enabled)
+        {
+            _autoConnectTimer.Start();
+        }
+    }
+
+    private void HideToTray()
+    {
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        _trayIcon.Visible = true;
+        Hide();
+        ShowInTaskbar = false;
+    }
+
+    private void RestoreFromTray()
+    {
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        ShowInTaskbar = true;
+        Show();
+        WindowState = FormWindowState.Normal;
+        Activate();
+    }
+
+    private void ExitApplication()
+    {
+        _exitRequested = true;
+        _trayIcon.Visible = false;
+        _autoConnectTimer.Stop();
+        Close();
     }
 
     private void DisconnectByUser()
     {
         _manualDisconnect = true;
+        _autoConnectTimer.Stop();
         DisconnectSilent();
-        SetConnectedUi(false, "未接続");
-        AddLog("切断しました。");
+        SetConnectedUi(false, "Disconnected");
+        AddLog("Disconnected by user.");
     }
 
     private void DisconnectSilent()
@@ -658,7 +922,12 @@ public sealed partial class ReceiverForm : Form
 
         if (!IsDisposed)
         {
-            BeginInvoke(new Action(() => SetConnectedUi(false, "未接続")));
+            BeginInvoke(new Action(() => SetConnectedUi(false, "Disconnected")));
+        }
+
+        if (!_manualDisconnect && !_exitRequested)
+        {
+            ScheduleAutoReconnect();
         }
     }
 
@@ -666,7 +935,7 @@ public sealed partial class ReceiverForm : Form
     {
         using var dialog = new FolderBrowserDialog
         {
-            Description = "保存先フォルダを選択してください。",
+            Description = "Select save folder.",
             UseDescriptionForTitle = true,
             SelectedPath = GetSaveFolder(),
         };

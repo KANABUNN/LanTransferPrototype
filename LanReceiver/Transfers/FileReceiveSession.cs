@@ -6,6 +6,8 @@ internal sealed class FileReceiveSession : IDisposable
     public required string FinalPath { get; init; }
     public required string TempPath { get; init; }
     public required long FileSize { get; init; }
+    public bool OpenAfterReceive { get; init; }
+    public string OpenRequestId { get; init; } = "";
     public long ReceivedBytes { get; set; }
     public required FileStream Stream { get; init; }
 
