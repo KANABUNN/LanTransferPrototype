@@ -65,12 +65,12 @@ public sealed partial class SenderForm
 
         _sendOpenTargetAllButton.Text = "Open target all";
         _sendOpenTargetAllButton.Width = 130;
-        _sendOpenTargetAllButton.Enabled = false;
+        _sendOpenTargetAllButton.Enabled = true;
         topPanel.Controls.Add(_sendOpenTargetAllButton);
 
         _sendOpenTargetSelectedButton.Text = "Open target selected";
         _sendOpenTargetSelectedButton.Width = 155;
-        _sendOpenTargetSelectedButton.Enabled = false;
+        _sendOpenTargetSelectedButton.Enabled = true;
         topPanel.Controls.Add(_sendOpenTargetSelectedButton);
 
         layout.Controls.Add(topPanel, 0, 0);
@@ -87,12 +87,12 @@ public sealed partial class SenderForm
 
         _sendFileAndOpenAllButton.Text = "Send file and open all";
         _sendFileAndOpenAllButton.Width = 170;
-        _sendFileAndOpenAllButton.Enabled = false;
+        _sendFileAndOpenAllButton.Enabled = true;
         filePanel.Controls.Add(_sendFileAndOpenAllButton);
 
         _sendFileAndOpenSelectedButton.Text = "Send file and open selected";
         _sendFileAndOpenSelectedButton.Width = 195;
-        _sendFileAndOpenSelectedButton.Enabled = false;
+        _sendFileAndOpenSelectedButton.Enabled = true;
         filePanel.Controls.Add(_sendFileAndOpenSelectedButton);
 
         layout.Controls.Add(filePanel, 0, 2);
