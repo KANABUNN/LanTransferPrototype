@@ -7,7 +7,7 @@
 *.zip
 *.ps1
 _backup*
-*.bak_*
+*.bak*
 files/
 
 # User-specific files

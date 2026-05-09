@@ -214,7 +214,7 @@ public sealed partial class SenderForm : Form
         fileGroup.Controls.Add(fileLayout);
         root.Controls.Add(fileGroup, 1, 3);
 
-        var screenGroup = new GroupBox { Text = "画面配信（動画フレーム化）", Dock = DockStyle.Fill };
+        var screenGroup = new GroupBox { Text = "画面配信（30FPS MJPEG）", Dock = DockStyle.Fill };
         var screenLayout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 4, ColumnCount = 1, Padding = new Padding(8) };
         screenLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
         screenLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
@@ -224,8 +224,8 @@ public sealed partial class SenderForm : Form
         var screenOptionsPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
         screenOptionsPanel.Controls.Add(new Label { Text = "FPS:", AutoSize = true, Padding = new Padding(0, 6, 0, 0) });
         _screenFpsBox.Minimum = 1;
-        _screenFpsBox.Maximum = 30;
-        _screenFpsBox.Value = 10;
+        _screenFpsBox.Maximum = 60;
+        _screenFpsBox.Value = 30;
         _screenFpsBox.Width = 70;
         screenOptionsPanel.Controls.Add(_screenFpsBox);
 
@@ -233,7 +233,7 @@ public sealed partial class SenderForm : Form
         _screenQualityBox.Minimum = 20;
         _screenQualityBox.Maximum = 95;
         _screenQualityBox.Increment = 5;
-        _screenQualityBox.Value = 70;
+        _screenQualityBox.Value = 75;
         _screenQualityBox.Width = 70;
         screenOptionsPanel.Controls.Add(_screenQualityBox);
         screenLayout.Controls.Add(screenOptionsPanel, 0, 0);
@@ -267,7 +267,7 @@ public sealed partial class SenderForm : Form
         screenStreamPanel.Controls.Add(_stopScreenButton);
         screenLayout.Controls.Add(screenStreamPanel, 0, 2);
 
-        _screenStatusLabel.Text = "画面配信待機中";
+        _screenStatusLabel.Text = "30FPS画面配信待機中";
         _screenStatusLabel.Dock = DockStyle.Fill;
         _screenStatusLabel.TextAlign = ContentAlignment.MiddleLeft;
         screenLayout.Controls.Add(_screenStatusLabel, 0, 3);
@@ -871,7 +871,7 @@ public sealed partial class SenderForm : Form
                 _screenStreamCts = null;
                 _activeScreenStreamId = null;
                 SetSendButtonsEnabled(_serverCts is not null);
-                UpdateScreenStatus("画面配信待機中");
+                UpdateScreenStatus("30FPS画面配信待機中");
             }
         });
     }
