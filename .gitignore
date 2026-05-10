@@ -9,6 +9,7 @@
 _backup*
 *.bak*
 files/
+ffmpeg/
 
 # User-specific files
 *.rsuser
