@@ -27,37 +27,36 @@ public sealed class ScreenVideoStreamer
             ? Guid.NewGuid().ToString("N")
             : options.StreamId;
 
-        int targetFps = Math.Clamp(options.Fps, 1, 60);
+        int requestedTargetFps = Math.Clamp(options.Fps, 1, 60);
+        int effectiveTargetFps = requestedTargetFps;
         int requestedQuality = Math.Clamp(options.Quality, 20, 95);
         int requestedScalePercent = Math.Clamp(options.ScalePercent, 25, 100);
         string captureSource = string.IsNullOrWhiteSpace(options.CaptureSource)
             ? ScreenCaptureSource.Primary
             : options.CaptureSource;
 
-        bool highFpsMode = targetFps >= 45;
+        bool highFpsMode = requestedTargetFps >= 45;
         bool adaptiveMode = options.EnableAdaptivePerformance || highFpsMode;
 
         int currentQuality = requestedQuality;
         int currentScalePercent = requestedScalePercent;
-        int minQuality = highFpsMode ? Math.Clamp(options.HighFpsMinQuality, 35, requestedQuality) : 20;
-        int minScalePercent = highFpsMode ? Math.Clamp(options.HighFpsMinScalePercent, 25, requestedScalePercent) : 25;
+        int minQuality = highFpsMode ? Math.Clamp(options.HighFpsMinQuality, 40, requestedQuality) : 20;
+        int minScalePercent = highFpsMode ? Math.Clamp(options.HighFpsMinScalePercent, 40, requestedScalePercent) : 25;
+        int minEffectiveFps = highFpsMode ? Math.Clamp(options.HighFpsMinEffectiveFps, 30, requestedTargetFps) : requestedTargetFps;
 
-        // In 60FPS mode, starting at 100%/high quality often wastes the first seconds.
-        // Start from a practical profile, then adapt upward only when there is enough margin.
         if (highFpsMode)
         {
             currentQuality = Math.Min(currentQuality, options.HighFpsStartQuality);
             currentScalePercent = Math.Min(currentScalePercent, options.HighFpsStartScalePercent);
         }
 
-        double frameIntervalTicks = Stopwatch.Frequency / (double)targetFps;
-        double frameBudgetMs = 1000.0 / targetFps;
+        double frameIntervalTicks = Stopwatch.Frequency / (double)effectiveTargetFps;
+        double frameBudgetMs = 1000.0 / effectiveTargetFps;
         double nextFrameTicks = Stopwatch.GetTimestamp();
 
         long frameNo = 0;
         long measuredFrameCount = 0;
         long measuredBytes = 0;
-
         long recentFrameCount = 0;
         long recentBytes = 0;
         long totalLateFrames = 0;
@@ -66,7 +65,7 @@ public sealed class ScreenVideoStreamer
         var totalStopwatch = Stopwatch.StartNew();
         var statsStopwatch = Stopwatch.StartNew();
         double lastAdaptiveChangeSeconds = 0;
-        string adaptiveState = highFpsMode ? "adaptive 60fps profile" : "fixed profile";
+        string adaptiveState = highFpsMode ? "adaptive high-fps warmup" : "fixed profile";
 
         double lastCaptureMs = 0;
         double lastCopyMs = 0;
@@ -87,9 +86,11 @@ public sealed class ScreenVideoStreamer
 
             while (!token.IsCancellationRequested)
             {
+                frameIntervalTicks = Stopwatch.Frequency / (double)Math.Max(effectiveTargetFps, 1);
+                frameBudgetMs = 1000.0 / Math.Max(effectiveTargetFps, 1);
+
                 double loopStartTicks = Stopwatch.GetTimestamp();
                 bool isWarmingUpAtLoopStart = totalStopwatch.Elapsed.TotalSeconds < WarmupSeconds;
-
                 double nowTicks = loopStartTicks;
 
                 if (nowTicks < nextFrameTicks)
@@ -101,18 +102,15 @@ public sealed class ScreenVideoStreamer
                 else
                 {
                     double lateByFrames = (nowTicks - nextFrameTicks) / frameIntervalTicks;
-
                     if (lateByFrames >= 1)
                     {
                         long lateCount = (long)Math.Floor(lateByFrames);
-
                         if (!isWarmingUpAtLoopStart)
                         {
                             totalLateFrames += lateCount;
                             recentLateFrames += lateCount;
                         }
 
-                        // Do not chase old frames. Keep latency low by following the latest schedule.
                         nextFrameTicks = nowTicks;
                     }
                 }
@@ -138,7 +136,7 @@ public sealed class ScreenVideoStreamer
                 lastSuccessClients = successClients;
                 lastSendMs = sendStopwatch.Elapsed.TotalMilliseconds;
 
-                long loopEndTicks = Stopwatch.GetTimestamp();
+                double loopEndTicks = Stopwatch.GetTimestamp();
                 lastLoopMs = (loopEndTicks - loopStartTicks) * 1000.0 / Stopwatch.Frequency;
 
                 bool isWarmingUpAfterFrame = totalStopwatch.Elapsed.TotalSeconds < WarmupSeconds;
@@ -160,25 +158,24 @@ public sealed class ScreenVideoStreamer
                     double recentSeconds = Math.Max(statsStopwatch.Elapsed.TotalSeconds, 0.001);
                     double totalSeconds = totalStopwatch.Elapsed.TotalSeconds;
                     double measuredSeconds = Math.Max(totalSeconds - WarmupSeconds, 0.001);
-
                     bool isWarmingUpNow = totalSeconds < WarmupSeconds;
 
                     double recentFps = recentFrameCount / recentSeconds;
                     double recentMbps = (recentBytes * 8.0) / recentSeconds / 1_000_000.0;
-
                     double averageFps = isWarmingUpNow ? 0 : measuredFrameCount / measuredSeconds;
                     double averageMbps = isWarmingUpNow ? 0 : (measuredBytes * 8.0) / measuredSeconds / 1_000_000.0;
-
                     double marginMs = frameBudgetMs - lastLoopMs;
 
                     if (adaptiveMode && !isWarmingUpNow)
                     {
                         adaptiveState = AdaptPerformanceProfile(
-                            targetFps,
+                            requestedTargetFps,
+                            ref effectiveTargetFps,
                             requestedQuality,
                             requestedScalePercent,
                             minQuality,
                             minScalePercent,
+                            minEffectiveFps,
                             recentFps,
                             marginMs,
                             recentLateFrames,
@@ -186,6 +183,9 @@ public sealed class ScreenVideoStreamer
                             ref lastAdaptiveChangeSeconds,
                             ref currentQuality,
                             ref currentScalePercent);
+
+                        frameIntervalTicks = Stopwatch.Frequency / (double)Math.Max(effectiveTargetFps, 1);
+                        frameBudgetMs = 1000.0 / Math.Max(effectiveTargetFps, 1);
                     }
 
                     StatsChanged?.Invoke(new ScreenStreamStats(
@@ -197,7 +197,7 @@ public sealed class ScreenVideoStreamer
                         lastSuccessClients,
                         recentFps,
                         recentMbps,
-                        targetFps,
+                        requestedTargetFps,
                         currentScalePercent,
                         captureSource,
                         lastCaptureMs,
@@ -219,7 +219,8 @@ public sealed class ScreenVideoStreamer
                         requestedQuality,
                         requestedScalePercent,
                         adaptiveMode,
-                        adaptiveState));
+                        adaptiveState,
+                        effectiveTargetFps));
 
                     recentFrameCount = 0;
                     recentBytes = 0;
@@ -231,7 +232,6 @@ public sealed class ScreenVideoStreamer
         finally
         {
             TrySetCurrentThreadPriority(previousThreadPriority);
-
             if (timerResolutionRequested)
             {
                 TryEndHighResolutionTimer();
@@ -240,11 +240,13 @@ public sealed class ScreenVideoStreamer
     }
 
     private static string AdaptPerformanceProfile(
-        int targetFps,
+        int requestedTargetFps,
+        ref int effectiveTargetFps,
         int requestedQuality,
         int requestedScalePercent,
         int minQuality,
         int minScalePercent,
+        int minEffectiveFps,
         double recentFps,
         double marginMs,
         long recentLateFrames,
@@ -255,11 +257,11 @@ public sealed class ScreenVideoStreamer
     {
         if (elapsedSeconds - lastAdaptiveChangeSeconds < AdaptiveCooldownSeconds)
         {
-            return "adaptive hold";
+            return EffectiveState("adaptive hold", requestedTargetFps, effectiveTargetFps);
         }
 
-        bool overloaded = recentLateFrames > 0 || marginMs < 0.8 || recentFps < targetFps * 0.92;
-        bool veryStable = recentLateFrames == 0 && marginMs > 3.0 && recentFps >= targetFps * 0.97;
+        bool overloaded = recentLateFrames > 0 || marginMs < 0.5 || recentFps < effectiveTargetFps * 0.92;
+        bool veryStable = recentLateFrames == 0 && marginMs > 3.0 && recentFps >= effectiveTargetFps * 0.97;
 
         if (overloaded)
         {
@@ -268,39 +270,61 @@ public sealed class ScreenVideoStreamer
             if (currentScalePercent > minScalePercent)
             {
                 currentScalePercent = Math.Max(minScalePercent, currentScalePercent - 5);
-                return $"adaptive scale down -> {currentScalePercent}%";
+                return EffectiveState($"adaptive scale down -> {currentScalePercent}%", requestedTargetFps, effectiveTargetFps);
             }
 
             if (currentQuality > minQuality)
             {
                 currentQuality = Math.Max(minQuality, currentQuality - 5);
-                return $"adaptive quality down -> {currentQuality}";
+                return EffectiveState($"adaptive quality down -> {currentQuality}", requestedTargetFps, effectiveTargetFps);
             }
 
-            return "adaptive minimum profile";
+            if (effectiveTargetFps > minEffectiveFps)
+            {
+                effectiveTargetFps = Math.Max(minEffectiveFps, effectiveTargetFps - 5);
+                return EffectiveState($"adaptive fps fallback -> {effectiveTargetFps}fps", requestedTargetFps, effectiveTargetFps);
+            }
+
+            return EffectiveState("adaptive minimum profile", requestedTargetFps, effectiveTargetFps);
         }
 
         if (veryStable)
         {
             lastAdaptiveChangeSeconds = elapsedSeconds;
 
-            // Prefer quality recovery first because it is visually safer than increasing resolution too soon.
+            // Keep FPS recovery conservative. FPS first, then quality/scale.
+            if (effectiveTargetFps < requestedTargetFps && marginMs > 4.0)
+            {
+                effectiveTargetFps = Math.Min(requestedTargetFps, effectiveTargetFps + 5);
+                return EffectiveState($"adaptive fps up -> {effectiveTargetFps}fps", requestedTargetFps, effectiveTargetFps);
+            }
+
             if (currentQuality < requestedQuality)
             {
                 currentQuality = Math.Min(requestedQuality, currentQuality + 5);
-                return $"adaptive quality up -> {currentQuality}";
+                return EffectiveState($"adaptive quality up -> {currentQuality}", requestedTargetFps, effectiveTargetFps);
             }
 
             if (currentScalePercent < requestedScalePercent)
             {
                 currentScalePercent = Math.Min(requestedScalePercent, currentScalePercent + 5);
-                return $"adaptive scale up -> {currentScalePercent}%";
+                return EffectiveState($"adaptive scale up -> {currentScalePercent}%", requestedTargetFps, effectiveTargetFps);
             }
 
-            return "adaptive full profile";
+            return EffectiveState("adaptive full profile", requestedTargetFps, effectiveTargetFps);
         }
 
-        return "adaptive stable";
+        return EffectiveState("adaptive stable", requestedTargetFps, effectiveTargetFps);
+    }
+
+    private static string EffectiveState(string state, int requestedTargetFps, int effectiveTargetFps)
+    {
+        if (effectiveTargetFps != requestedTargetFps)
+        {
+            return $"{state}; effective {effectiveTargetFps}fps";
+        }
+
+        return state;
     }
 
     private static async Task WaitUntilAsync(double targetTimestamp, CancellationToken token)
@@ -308,7 +332,6 @@ public sealed class ScreenVideoStreamer
         while (true)
         {
             token.ThrowIfCancellationRequested();
-
             double remainingMs = (targetTimestamp - Stopwatch.GetTimestamp()) * 1000.0 / Stopwatch.Frequency;
 
             if (remainingMs <= 0.45)
@@ -343,7 +366,6 @@ public sealed class ScreenVideoStreamer
         }
         catch
         {
-            // Ignore. Some environments may not allow priority changes.
         }
     }
 
@@ -382,19 +404,17 @@ public sealed class ScreenVideoOptions
     public string StreamId { get; init; } = Guid.NewGuid().ToString("N");
     public int Fps { get; init; } = 30;
     public int Quality { get; init; } = 70;
-
-    // 100 = original size. 60 is a safer fallback, but Primary/100 can work on capable machines.
     public int ScalePercent { get; init; } = 60;
-
-    // Primary is faster than Virtual when the sender has multiple displays.
     public string CaptureSource { get; init; } = ScreenCaptureSource.Primary;
-
-    // For 45fps+ this is enabled even if false, because MJPEG needs active control to avoid latency.
     public bool EnableAdaptivePerformance { get; init; } = true;
     public int HighFpsStartScalePercent { get; init; } = 75;
     public int HighFpsStartQuality { get; init; } = 65;
     public int HighFpsMinScalePercent { get; init; } = 50;
     public int HighFpsMinQuality { get; init; } = 50;
+
+    // MJPEG/GDI fallback floor. If 60fps cannot be maintained even at minimum quality/scale,
+    // the effective target is reduced to avoid unstable latency.
+    public int HighFpsMinEffectiveFps { get; init; } = 45;
 }
 
 public static class ScreenCaptureSource
@@ -434,4 +454,5 @@ public sealed record ScreenStreamStats(
     int RequestedQuality,
     int RequestedScalePercent,
     bool AdaptiveMode,
-    string AdaptiveState);
+    string AdaptiveState,
+    int EffectiveTargetFps);
