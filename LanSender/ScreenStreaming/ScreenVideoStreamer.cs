@@ -5,6 +5,9 @@ namespace LanSender.ScreenStreaming;
 
 public sealed class ScreenVideoStreamer
 {
+    private const double WarmupSeconds = 3.0;
+    private const int StatsIntervalMs = 500;
+
     private readonly ScreenCaptureService _captureService;
 
     public ScreenVideoStreamer(ScreenCaptureService captureService)
@@ -19,8 +22,6 @@ public sealed class ScreenVideoStreamer
         Func<ScreenFrame, CancellationToken, Task<int>> sendFrameAsync,
         CancellationToken token)
     {
-        using HighResolutionTimerScope timerScope = HighResolutionTimerScope.TryStart();
-
         string streamId = string.IsNullOrWhiteSpace(options.StreamId)
             ? Guid.NewGuid().ToString("N")
             : options.StreamId;
@@ -34,17 +35,19 @@ public sealed class ScreenVideoStreamer
 
         double frameIntervalTicks = Stopwatch.Frequency / (double)targetFps;
         double frameBudgetMs = 1000.0 / targetFps;
-
-        long streamStartTicks = Stopwatch.GetTimestamp();
-        double nextFrameTicks = streamStartTicks;
+        double nextFrameTicks = Stopwatch.GetTimestamp();
 
         long frameNo = 0;
-        long totalBytes = 0;
-        long droppedScheduleFrames = 0;
+        long measuredFrameCount = 0;
+        long measuredBytes = 0;
 
-        long statsStartTicks = streamStartTicks;
-        long statsFrameStart = 0;
-        long statsBytesStart = 0;
+        long recentFrameCount = 0;
+        long recentBytes = 0;
+        long totalLateFrames = 0;
+        long recentLateFrames = 0;
+
+        var totalStopwatch = Stopwatch.StartNew();
+        var statsStopwatch = Stopwatch.StartNew();
 
         double lastCaptureMs = 0;
         double lastCopyMs = 0;
@@ -52,173 +55,223 @@ public sealed class ScreenVideoStreamer
         double lastSendMs = 0;
         double lastLoopMs = 0;
         int lastSuccessClients = 0;
-        ScreenFrame? lastFrameForStats = null;
+        int lastFrameBytes = 0;
+        int lastWidth = 0;
+        int lastHeight = 0;
 
-        while (!token.IsCancellationRequested)
+        bool timerResolutionRequested = TryBeginHighResolutionTimer();
+        ThreadPriority previousThreadPriority = Thread.CurrentThread.Priority;
+
+        try
         {
-            await PreciseDelayUntilAsync(nextFrameTicks, token);
+            TrySetCurrentThreadPriority(ThreadPriority.Highest);
 
-            long loopStartTicks = Stopwatch.GetTimestamp();
-
-            ScreenFrame frame = _captureService.CaptureDesktopJpeg(streamId, ++frameNo, quality, scalePercent, captureSource);
-            lastFrameForStats = frame;
-            lastCaptureMs = frame.CaptureMs;
-            lastCopyMs = frame.CopyMs;
-            lastEncodeMs = frame.EncodeMs;
-
-            long sendStartTicks = Stopwatch.GetTimestamp();
-            int successClients = await sendFrameAsync(frame, token);
-            long sendEndTicks = Stopwatch.GetTimestamp();
-
-            lastSuccessClients = successClients;
-            lastSendMs = TicksToMilliseconds(sendEndTicks - sendStartTicks);
-            totalBytes += frame.ImageBytes.LongLength * Math.Max(successClients, 0);
-
-            long loopEndTicks = Stopwatch.GetTimestamp();
-            lastLoopMs = TicksToMilliseconds(loopEndTicks - loopStartTicks);
-
-            nextFrameTicks += frameIntervalTicks;
-
-            if (loopEndTicks > nextFrameTicks)
+            while (!token.IsCancellationRequested)
             {
-                long missedFrames = (long)Math.Floor((loopEndTicks - nextFrameTicks) / frameIntervalTicks) + 1;
-                if (missedFrames > 0)
+                double loopStartTicks = Stopwatch.GetTimestamp();
+                bool isWarmingUpAtLoopStart = totalStopwatch.Elapsed.TotalSeconds < WarmupSeconds;
+
+                double nowTicks = loopStartTicks;
+
+                if (nowTicks < nextFrameTicks)
                 {
-                    droppedScheduleFrames += missedFrames;
-                    nextFrameTicks += missedFrames * frameIntervalTicks;
+                    await WaitUntilAsync(nextFrameTicks, token);
+                    loopStartTicks = Stopwatch.GetTimestamp();
+                    nowTicks = loopStartTicks;
+                }
+                else
+                {
+                    double lateByFrames = (nowTicks - nextFrameTicks) / frameIntervalTicks;
+
+                    if (lateByFrames >= 1)
+                    {
+                        long lateCount = (long)Math.Floor(lateByFrames);
+
+                        if (!isWarmingUpAtLoopStart)
+                        {
+                            totalLateFrames += lateCount;
+                            recentLateFrames += lateCount;
+                        }
+
+                        // Do not chase old frames. Keep latency low by following the latest schedule.
+                        nextFrameTicks = nowTicks;
+                    }
+                }
+
+                ScreenFrame frame = _captureService.CaptureDesktopJpeg(
+                    streamId,
+                    ++frameNo,
+                    quality,
+                    scalePercent,
+                    captureSource);
+
+                lastCaptureMs = frame.CaptureMs;
+                lastCopyMs = frame.CopyMs;
+                lastEncodeMs = frame.EncodeMs;
+                lastFrameBytes = frame.ImageBytes.Length;
+                lastWidth = frame.Info.Width;
+                lastHeight = frame.Info.Height;
+
+                var sendStopwatch = Stopwatch.StartNew();
+                int successClients = await sendFrameAsync(frame, token);
+                sendStopwatch.Stop();
+
+                lastSuccessClients = successClients;
+                lastSendMs = sendStopwatch.Elapsed.TotalMilliseconds;
+
+                long loopEndTicks = Stopwatch.GetTimestamp();
+                lastLoopMs = (loopEndTicks - loopStartTicks) * 1000.0 / Stopwatch.Frequency;
+
+                bool isWarmingUpAfterFrame = totalStopwatch.Elapsed.TotalSeconds < WarmupSeconds;
+                long frameBytesForClients = frame.ImageBytes.LongLength * Math.Max(successClients, 0);
+
+                // Recent FPS intentionally includes warmup so the user can see current movement immediately.
+                recentFrameCount++;
+                recentBytes += frameBytesForClients;
+
+                // Average FPS excludes the first few seconds so startup/JIT/GDI warmup does not pollute the long-term value.
+                if (!isWarmingUpAfterFrame)
+                {
+                    measuredFrameCount++;
+                    measuredBytes += frameBytesForClients;
+                }
+
+                nextFrameTicks += frameIntervalTicks;
+
+                if (statsStopwatch.ElapsedMilliseconds >= StatsIntervalMs)
+                {
+                    double recentSeconds = Math.Max(statsStopwatch.Elapsed.TotalSeconds, 0.001);
+                    double totalSeconds = totalStopwatch.Elapsed.TotalSeconds;
+                    double measuredSeconds = Math.Max(totalSeconds - WarmupSeconds, 0.001);
+
+                    bool isWarmingUpNow = totalSeconds < WarmupSeconds;
+
+                    double recentFps = recentFrameCount / recentSeconds;
+                    double recentMbps = (recentBytes * 8.0) / recentSeconds / 1_000_000.0;
+
+                    double averageFps = isWarmingUpNow ? 0 : measuredFrameCount / measuredSeconds;
+                    double averageMbps = isWarmingUpNow ? 0 : (measuredBytes * 8.0) / measuredSeconds / 1_000_000.0;
+
+                    double marginMs = frameBudgetMs - lastLoopMs;
+
+                    StatsChanged?.Invoke(new ScreenStreamStats(
+                        streamId,
+                        frameNo,
+                        lastWidth,
+                        lastHeight,
+                        lastFrameBytes,
+                        lastSuccessClients,
+                        recentFps,
+                        recentMbps,
+                        targetFps,
+                        scalePercent,
+                        captureSource,
+                        lastCaptureMs,
+                        lastCopyMs,
+                        lastEncodeMs,
+                        lastSendMs,
+                        lastLoopMs,
+                        totalLateFrames,
+                        recentFps,
+                        averageFps,
+                        recentMbps,
+                        averageMbps,
+                        marginMs,
+                        recentLateFrames,
+                        totalLateFrames,
+                        isWarmingUpNow,
+                        timerResolutionRequested));
+
+                    recentFrameCount = 0;
+                    recentBytes = 0;
+                    recentLateFrames = 0;
+                    statsStopwatch.Restart();
                 }
             }
+        }
+        finally
+        {
+            TrySetCurrentThreadPriority(previousThreadPriority);
 
-            long nowTicks = Stopwatch.GetTimestamp();
-            double statsElapsedMs = TicksToMilliseconds(nowTicks - statsStartTicks);
-
-            if (statsElapsedMs >= 500 && lastFrameForStats is not null)
+            if (timerResolutionRequested)
             {
-                double statsElapsedSeconds = Math.Max(statsElapsedMs / 1000.0, 0.001);
-                double totalElapsedSeconds = Math.Max(TicksToMilliseconds(nowTicks - streamStartTicks) / 1000.0, 0.001);
-
-                long framesInWindow = frameNo - statsFrameStart;
-                long bytesInWindow = totalBytes - statsBytesStart;
-
-                double windowFps = framesInWindow / statsElapsedSeconds;
-                double averageFps = frameNo / totalElapsedSeconds;
-                double windowMbps = (bytesInWindow * 8.0) / statsElapsedSeconds / 1_000_000.0;
-                double remainingBudgetMs = frameBudgetMs - lastLoopMs;
-
-                StatsChanged?.Invoke(new ScreenStreamStats(
-                    lastFrameForStats.Info.StreamId,
-                    lastFrameForStats.Info.FrameNo,
-                    lastFrameForStats.Info.Width,
-                    lastFrameForStats.Info.Height,
-                    lastFrameForStats.ImageBytes.Length,
-                    lastSuccessClients,
-                    windowFps,
-                    windowMbps,
-                    targetFps,
-                    scalePercent,
-                    captureSource,
-                    lastCaptureMs,
-                    lastCopyMs,
-                    lastEncodeMs,
-                    lastSendMs,
-                    lastLoopMs,
-                    droppedScheduleFrames,
-                    averageFps,
-                    frameBudgetMs,
-                    remainingBudgetMs,
-                    timerScope.Enabled));
-
-                statsStartTicks = nowTicks;
-                statsFrameStart = frameNo;
-                statsBytesStart = totalBytes;
+                TryEndHighResolutionTimer();
             }
         }
     }
 
-    private static async Task PreciseDelayUntilAsync(double targetTicks, CancellationToken token)
+    private static async Task WaitUntilAsync(double targetTimestamp, CancellationToken token)
     {
         while (true)
         {
             token.ThrowIfCancellationRequested();
 
-            long nowTicks = Stopwatch.GetTimestamp();
-            double remainingMs = (targetTicks - nowTicks) * 1000.0 / Stopwatch.Frequency;
+            double remainingMs = (targetTimestamp - Stopwatch.GetTimestamp()) * 1000.0 / Stopwatch.Frequency;
 
-            if (remainingMs <= 0)
+            if (remainingMs <= 0.6)
             {
-                return;
+                break;
             }
 
-            if (remainingMs > 4.0)
+            if (remainingMs >= 2.0)
             {
-                await Task.Delay(Math.Max(1, (int)(remainingMs - 2.0)), token);
-                continue;
+                int delayMs = Math.Max(1, (int)Math.Floor(remainingMs) - 1);
+                await Task.Delay(delayMs, token);
             }
-
-            if (remainingMs > 1.0)
+            else
             {
-                await Task.Delay(1, token);
-                continue;
+                await Task.Yield();
             }
-
-            if (remainingMs > 0.20)
-            {
-                Thread.SpinWait(80);
-                continue;
-            }
-
-            return;
         }
+
+        while (Stopwatch.GetTimestamp() < targetTimestamp)
+        {
+            Thread.SpinWait(20);
+        }
+
+        token.ThrowIfCancellationRequested();
     }
 
-    private static double TicksToMilliseconds(long ticks)
+    private static void TrySetCurrentThreadPriority(ThreadPriority priority)
     {
-        return ticks * 1000.0 / Stopwatch.Frequency;
+        try
+        {
+            Thread.CurrentThread.Priority = priority;
+        }
+        catch
+        {
+            // Ignore. Some environments may not allow priority changes.
+        }
     }
 
-    private sealed class HighResolutionTimerScope : IDisposable
+    private static bool TryBeginHighResolutionTimer()
     {
-        private HighResolutionTimerScope(bool enabled)
+        try
         {
-            Enabled = enabled;
+            return timeBeginPeriod(1) == 0;
         }
-
-        public bool Enabled { get; }
-
-        public static HighResolutionTimerScope TryStart()
+        catch
         {
-            try
-            {
-                return new HighResolutionTimerScope(timeBeginPeriod(1) == 0);
-            }
-            catch
-            {
-                return new HighResolutionTimerScope(false);
-            }
+            return false;
         }
-
-        public void Dispose()
-        {
-            if (!Enabled)
-            {
-                return;
-            }
-
-            try
-            {
-                timeEndPeriod(1);
-            }
-            catch
-            {
-            }
-        }
-
-        [DllImport("winmm.dll")]
-        private static extern uint timeBeginPeriod(uint uMilliseconds);
-
-        [DllImport("winmm.dll")]
-        private static extern uint timeEndPeriod(uint uMilliseconds);
     }
+
+    private static void TryEndHighResolutionTimer()
+    {
+        try
+        {
+            _ = timeEndPeriod(1);
+        }
+        catch
+        {
+        }
+    }
+
+    [DllImport("winmm.dll")]
+    private static extern uint timeBeginPeriod(uint uPeriod);
+
+    [DllImport("winmm.dll")]
+    private static extern uint timeEndPeriod(uint uPeriod);
 }
 
 public sealed class ScreenVideoOptions
@@ -227,7 +280,7 @@ public sealed class ScreenVideoOptions
     public int Fps { get; init; } = 30;
     public int Quality { get; init; } = 70;
 
-    // 100 = original size. 60 is practical when copy/encode cost is high.
+    // 100 = original size. 60 is a safer fallback, but Primary/100 can work on capable machines.
     public int ScalePercent { get; init; } = 60;
 
     // Primary is faster than Virtual when the sender has multiple displays.
@@ -258,78 +311,12 @@ public sealed record ScreenStreamStats(
     double SendMs,
     double LoopMs,
     long DroppedScheduleFrames,
+    double RecentFps,
     double AverageFps,
-    double FrameBudgetMs,
-    double RemainingBudgetMs,
-    bool HighResolutionTimerEnabled);
-internal sealed class ScreenStreamingPriorityScope : IDisposable
-{
-    private readonly Process _process;
-    private readonly ProcessPriorityClass _originalProcessPriority;
-    private readonly ThreadPriority _originalThreadPriority;
-    private bool _disposed;
-
-    private ScreenStreamingPriorityScope(
-        Process process,
-        ProcessPriorityClass originalProcessPriority,
-        ThreadPriority originalThreadPriority)
-    {
-        _process = process;
-        _originalProcessPriority = originalProcessPriority;
-        _originalThreadPriority = originalThreadPriority;
-    }
-
-    public static ScreenStreamingPriorityScope TryEnter()
-    {
-        Process process = Process.GetCurrentProcess();
-        ProcessPriorityClass originalProcessPriority = process.PriorityClass;
-        ThreadPriority originalThreadPriority = Thread.CurrentThread.Priority;
-
-        try
-        {
-            if (process.PriorityClass is ProcessPriorityClass.Idle or ProcessPriorityClass.BelowNormal or ProcessPriorityClass.Normal)
-            {
-                process.PriorityClass = ProcessPriorityClass.AboveNormal;
-            }
-        }
-        catch
-        {
-        }
-
-        try
-        {
-            Thread.CurrentThread.Priority = ThreadPriority.Highest;
-        }
-        catch
-        {
-        }
-
-        return new ScreenStreamingPriorityScope(process, originalProcessPriority, originalThreadPriority);
-    }
-
-    public void Dispose()
-    {
-        if (_disposed)
-        {
-            return;
-        }
-
-        _disposed = true;
-
-        try
-        {
-            Thread.CurrentThread.Priority = _originalThreadPriority;
-        }
-        catch
-        {
-        }
-
-        try
-        {
-            _process.PriorityClass = _originalProcessPriority;
-        }
-        catch
-        {
-        }
-    }
-}
+    double RecentMbps,
+    double AverageMbps,
+    double MarginMs,
+    long RecentLateFrames,
+    long TotalLateFrames,
+    bool IsWarmingUp,
+    bool TimerResolutionRequested);

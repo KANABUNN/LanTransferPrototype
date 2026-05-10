@@ -864,9 +864,8 @@ public sealed partial class SenderForm : Form
 
         CancellationToken token = _screenStreamCts.Token;
         var streamer = new ScreenVideoStreamer(new ScreenCaptureService());
-        streamer.StatsChanged += stats => UpdateScreenStatus($"動画配信中: target {stats.TargetFps}fps / actual {stats.Fps:0.0}fps / avg {stats.AverageFps:0.0}fps / scale {stats.ScalePercent}% / source {stats.CaptureSource} / cap {stats.CaptureMs:0.0}ms (copy {stats.CopyMs:0.0} enc {stats.EncodeMs:0.0}) / send {stats.SendMs:0.0}ms / loop {stats.LoopMs:0.0}ms / margin {stats.RemainingBudgetMs:0.0}ms / late {stats.DroppedScheduleFrames} / timer {(stats.HighResolutionTimerEnabled ? "1ms" : "default")} / {FormatBytes(stats.LastFrameBytes)} / {stats.Mbps:0.0} Mbps");
-
-        _ = Task.Run(async () =>
+        streamer.StatsChanged += stats => UpdateScreenStatus(FormatScreenStats(stats));
+_ = Task.Run(async () =>
         {
             try
             {
@@ -983,6 +982,15 @@ public sealed partial class SenderForm : Form
         {
             await SendPacketToClientAsync(connection, PacketType.ScreenVideoStop, payload, token);
         }
+    }
+
+    private static string FormatScreenStats(ScreenStreamStats stats)
+    {
+        string phase = stats.IsWarmingUp ? "warmup" : "stable";
+        string timer = stats.TimerResolutionRequested ? "1ms" : "default";
+        double frameKb = stats.LastFrameBytes / 1024.0;
+
+        return $"動画配信中: target {stats.TargetFps}fps / actual {stats.RecentFps:0.0}fps / avg {stats.AverageFps:0.0}fps / {phase} / scale {stats.ScalePercent}% / source {stats.CaptureSource} / cap {stats.CaptureMs:0.0}ms (copy {stats.CopyMs:0.0} enc {stats.EncodeMs:0.0}) / send {stats.SendMs:0.0}ms / loop {stats.LoopMs:0.0}ms / margin {stats.MarginMs:0.0}ms / late +{stats.RecentLateFrames}/total {stats.TotalLateFrames} / {frameKb:0.#} KB / {stats.RecentMbps:0.0} Mbps / timer {timer}";
     }
 
     private void StopScreenStream()
