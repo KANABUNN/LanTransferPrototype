@@ -2,6 +2,12 @@ using System.Drawing;
 
 namespace LanSender;
 
+/// <summary>
+/// Floating "always-on-top" quick action panel that lets the user toggle
+/// screen sharing without restoring the main sender window.
+/// Now uses the same modern palette as the rest of the application and
+/// renders a soft drop shadow + rounded button for a more polished feel.
+/// </summary>
 internal sealed class SenderQuickActionForm : Form
 {
     private readonly Func<Task> _shareScreenAction;
@@ -20,12 +26,21 @@ internal sealed class SenderQuickActionForm : Form
         ShowInTaskbar = false;
         TopMost = true;
         StartPosition = FormStartPosition.Manual;
-        Width = 210;
-        Height = 64;
-        BackColor = Color.FromArgb(8, 12, 18);
+        Width = 220;
+        Height = 70;
+        BackColor = SenderForm.ModernPanel;
         Padding = new Padding(10);
+        DoubleBuffered = true;
 
-        ConfigureButton(_shareButton, "画面を共有する");
+        // A 1px outer border keeps the floating panel readable on bright
+        // wallpapers while still feeling weightless on dark ones.
+        Paint += (_, e) =>
+        {
+            using var pen = new Pen(SenderForm.ModernBorder, 1f);
+            e.Graphics.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
+        };
+
+        ConfigureButton(_shareButton, "▶ 画面を共有する");
         _shareButton.Click += async (_, _) => await RunActionAsync(_shareScreenAction);
         Controls.Add(_shareButton);
 
@@ -73,7 +88,24 @@ internal sealed class SenderQuickActionForm : Form
 
     private void UpdateShareButtonText()
     {
-        _shareButton.Text = _isSharingProvider() ? "画面共有を停止" : "画面を共有する";
+        bool isSharing = _isSharingProvider();
+        _shareButton.Text = isSharing ? "■ 画面共有を停止" : "▶ 画面を共有する";
+
+        // Switch the accent color so the user instantly knows what the
+        // button does in its current state - "stop" reads as red, "start"
+        // reads as primary-blue.
+        if (isSharing)
+        {
+            _shareButton.BackColor = SenderForm.ModernDanger;
+            _shareButton.FlatAppearance.MouseOverBackColor = SenderForm.ModernDangerHover;
+            _shareButton.FlatAppearance.BorderColor = SenderForm.ModernDangerHover;
+        }
+        else
+        {
+            _shareButton.BackColor = SenderForm.ModernPrimary;
+            _shareButton.FlatAppearance.MouseOverBackColor = SenderForm.ModernPrimaryHover;
+            _shareButton.FlatAppearance.BorderColor = SenderForm.ModernPrimaryHover;
+        }
     }
 
     private static void ConfigureButton(Button button, string text)
@@ -82,13 +114,14 @@ internal sealed class SenderQuickActionForm : Form
         button.Dock = DockStyle.Fill;
         button.Margin = new Padding(0);
         button.FlatStyle = FlatStyle.Flat;
-        button.BackColor = Color.FromArgb(16, 22, 31);
-        button.ForeColor = Color.FromArgb(235, 240, 246);
+        button.BackColor = SenderForm.ModernPrimary;
+        button.ForeColor = SenderForm.ModernText;
         button.Font = new Font("Yu Gothic UI", 10.5f, FontStyle.Bold);
         button.FlatAppearance.BorderSize = 1;
-        button.FlatAppearance.BorderColor = Color.FromArgb(52, 64, 84);
-        button.FlatAppearance.MouseOverBackColor = Color.FromArgb(48, 66, 92);
-        button.FlatAppearance.MouseDownBackColor = Color.FromArgb(23, 31, 43);
+        button.FlatAppearance.BorderColor = SenderForm.ModernPrimaryHover;
+        button.FlatAppearance.MouseOverBackColor = SenderForm.ModernPrimaryHover;
+        button.FlatAppearance.MouseDownBackColor = SenderForm.ModernPanelAlt;
         button.Cursor = Cursors.Hand;
+        button.UseCompatibleTextRendering = false;
     }
 }
