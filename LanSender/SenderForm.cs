@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -14,6 +14,7 @@ namespace LanSender;
 public sealed partial class SenderForm : Form
 {
     private const int FileChunkSize = 64 * 1024;
+    private const int SenderPageWidth = 1120;
 
     private readonly TextBox _portBox = new();
     private readonly TextBox _messageBox = new();
@@ -48,6 +49,9 @@ public sealed partial class SenderForm : Form
     private readonly ListBox _fileList = new();
     private readonly ListBox _logList = new();
 
+    private ModernScrollHost? _pageScrollHost;
+    private FlowLayoutPanel? _pageContent;
+
     private readonly List<ClientConnection> _clients = new();
     private readonly List<TransferItem> _transferItems = new();
 
@@ -71,6 +75,7 @@ public sealed partial class SenderForm : Form
         BuildUi();
         InitializeOpenTargetFeature();
         InitializeH264Feature();
+        FinalizeResponsiveLayout();
 
         _startButton.Click += (_, _) => StartServer();
         _stopButton.Click += (_, _) => StopServer();
@@ -95,37 +100,43 @@ public sealed partial class SenderForm : Form
         FormClosing += (_, _) => StopServer();
     }
 
-    private void BuildUi()
+        private void BuildUi()
     {
-        var scrollHost = new ModernScrollHost
+        const int leftColumnWidth = 360;
+        const int rightColumnWidth = 736;
+
+        SuspendLayout();
+
+        _pageScrollHost = new ModernScrollHost
         {
             Dock = DockStyle.Fill,
-            BackColor = ModernScrollPalette.Background,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+            BackColor = Color.FromArgb(8, 12, 18),
         };
 
-        var root = new TableLayoutPanel
+        _pageContent = new FlowLayoutPanel
         {
-            Dock = DockStyle.Fill,
-            RowCount = 6,
-            ColumnCount = 2,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Margin = Padding.Empty,
             Padding = new Padding(12),
-            BackColor = ModernScrollPalette.Background,
+            Width = SenderPageWidth + 24,
         };
 
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 34));
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 66));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 105));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 35));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 160));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 65));
+        _pageScrollHost.Content = _pageContent;
 
         var serverPanel = new FlowLayoutPanel
         {
-            Dock = DockStyle.Fill,
             FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = false,
+            WrapContents = true,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Margin = Padding.Empty,
+            Padding = new Padding(0, 0, 0, 6),
+            Width = SenderPageWidth,
         };
 
         serverPanel.Controls.Add(new Label { Text = "待受ポート:", AutoSize = true, Padding = new Padding(0, 8, 0, 0) });
@@ -133,8 +144,8 @@ public sealed partial class SenderForm : Form
         _portBox.Width = 100;
         serverPanel.Controls.Add(_portBox);
 
-        _startButton.Text = "開始";
-        _startButton.Width = 90;
+        _startButton.Text = "サーバー起動";
+        _startButton.Width = 110;
         serverPanel.Controls.Add(_startButton);
 
         _stopButton.Text = "停止";
@@ -142,24 +153,76 @@ public sealed partial class SenderForm : Form
         _stopButton.Enabled = false;
         serverPanel.Controls.Add(_stopButton);
 
-        root.Controls.Add(serverPanel, 0, 0);
-        root.SetColumnSpan(serverPanel, 2);
+        var mainArea = new TableLayoutPanel
+        {
+            ColumnCount = 2,
+            RowCount = 1,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+            Width = SenderPageWidth,
+        };
+        mainArea.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, leftColumnWidth));
+        mainArea.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, rightColumnWidth + 12));
 
-        var clientGroup = new GroupBox { Text = "接続中クライアント", Dock = DockStyle.Fill };
+        var clientGroup = new GroupBox
+        {
+            Text = "接続中クライアント",
+            Width = leftColumnWidth,
+            Height = 720,
+            Margin = Padding.Empty,
+            Padding = new Padding(10),
+        };
         _clientList.Dock = DockStyle.Fill;
         clientGroup.Controls.Add(_clientList);
-        root.Controls.Add(clientGroup, 0, 1);
-        root.SetRowSpan(clientGroup, 5);
+        mainArea.Controls.Add(clientGroup, 0, 0);
 
-        var messageGroup = new GroupBox { Text = "送信メッセージ", Dock = DockStyle.Fill };
+        var rightFlow = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Width = rightColumnWidth,
+            Margin = new Padding(12, 0, 0, 0),
+            Padding = Padding.Empty,
+        };
+
+        var messageGroup = new GroupBox
+        {
+            Text = "送信メッセージ",
+            Width = rightColumnWidth,
+            Height = 170,
+            Margin = Padding.Empty,
+            Padding = new Padding(10),
+        };
+        var messageLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+        };
+        messageLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        messageLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _messageBox.Multiline = true;
         _messageBox.Dock = DockStyle.Fill;
         _messageBox.ScrollBars = ScrollBars.Vertical;
         _messageBox.Text = "テストメッセージ";
-        messageGroup.Controls.Add(_messageBox);
-        root.Controls.Add(messageGroup, 1, 1);
+        messageLayout.Controls.Add(_messageBox, 0, 0);
 
-        var sendPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
+        var sendPanel = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = true,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Margin = new Padding(0, 8, 0, 0),
+            Padding = Padding.Empty,
+        };
         _sendAllButton.Text = "全員へ送信";
         _sendAllButton.Width = 130;
         _sendAllButton.Enabled = false;
@@ -169,17 +232,41 @@ public sealed partial class SenderForm : Form
         _sendSelectedButton.Width = 140;
         _sendSelectedButton.Enabled = false;
         sendPanel.Controls.Add(_sendSelectedButton);
-        root.Controls.Add(sendPanel, 1, 2);
+        messageLayout.Controls.Add(sendPanel, 0, 1);
+        messageGroup.Controls.Add(messageLayout);
+        rightFlow.Controls.Add(messageGroup);
 
-        var fileGroup = new GroupBox { Text = "ファイル・フォルダ送信", Dock = DockStyle.Fill };
-        var fileLayout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 5, ColumnCount = 1, Padding = new Padding(8) };
-        fileLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        var fileGroup = new GroupBox
+        {
+            Text = "ファイル・フォルダ送信",
+            Width = rightColumnWidth,
+            Height = 185,
+            Margin = new Padding(0, 12, 0, 0),
+            Padding = new Padding(10),
+        };
+        var fileLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            RowCount = 4,
+            ColumnCount = 1,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+        };
+        fileLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        fileLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        fileLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         fileLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        fileLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
-        fileLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-        fileLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
 
-        var fileAddPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
+        var fileAddPanel = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = true,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+        };
         _addFilesButton.Text = "ファイル追加";
         _addFilesButton.Width = 120;
         fileAddPanel.Controls.Add(_addFilesButton);
@@ -193,10 +280,16 @@ public sealed partial class SenderForm : Form
         fileAddPanel.Controls.Add(_clearFilesButton);
         fileLayout.Controls.Add(fileAddPanel, 0, 0);
 
-        _fileList.Dock = DockStyle.Fill;
-        fileLayout.Controls.Add(_fileList, 0, 1);
-
-        var fileSendPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
+        var fileSendPanel = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = true,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Margin = new Padding(0, 8, 0, 0),
+            Padding = Padding.Empty,
+        };
         _sendFileAllButton.Text = "全員へ送信";
         _sendFileAllButton.Width = 130;
         _sendFileAllButton.Enabled = false;
@@ -211,29 +304,51 @@ public sealed partial class SenderForm : Form
         _cancelTransferButton.Width = 110;
         _cancelTransferButton.Enabled = false;
         fileSendPanel.Controls.Add(_cancelTransferButton);
-        fileLayout.Controls.Add(fileSendPanel, 0, 2);
+        fileLayout.Controls.Add(fileSendPanel, 0, 1);
 
         _progressBar.Dock = DockStyle.Fill;
         _progressBar.Minimum = 0;
         _progressBar.Maximum = 1000;
-        fileLayout.Controls.Add(_progressBar, 0, 3);
+        fileLayout.Controls.Add(_progressBar, 0, 2);
 
         _progressLabel.Text = "待機中";
         _progressLabel.Dock = DockStyle.Fill;
         _progressLabel.TextAlign = ContentAlignment.MiddleLeft;
-        fileLayout.Controls.Add(_progressLabel, 0, 4);
-
+        fileLayout.Controls.Add(_progressLabel, 0, 3);
         fileGroup.Controls.Add(fileLayout);
-        root.Controls.Add(fileGroup, 1, 3);
+        rightFlow.Controls.Add(fileGroup);
 
-        var screenGroup = new GroupBox { Text = "画面配信（DXGI/MJPEG 60FPS試験）", Dock = DockStyle.Fill };
-        var screenLayout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 4, ColumnCount = 1, Padding = new Padding(8) };
-        screenLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
-        screenLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
-        screenLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+        var screenGroup = new GroupBox
+        {
+            Text = "画面配信（DXGI/MJPEG 60FPS試験）",
+            Width = rightColumnWidth,
+            Height = 200,
+            Margin = new Padding(0, 12, 0, 0),
+            Padding = new Padding(10),
+        };
+        var screenLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            RowCount = 4,
+            ColumnCount = 1,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+        };
+        screenLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        screenLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        screenLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         screenLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        var screenOptionsPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
+        var screenOptionsPanel = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = true,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+        };
         screenOptionsPanel.Controls.Add(new Label { Text = "FPS:", AutoSize = true, Padding = new Padding(0, 6, 0, 0) });
         _screenFpsBox.Minimum = 1;
         _screenFpsBox.Maximum = 60;
@@ -259,7 +374,8 @@ public sealed partial class SenderForm : Form
 
         screenOptionsPanel.Controls.Add(new Label { Text = "Source:", AutoSize = true, Padding = new Padding(12, 6, 0, 0) });
         _screenCaptureSourceBox.DropDownStyle = ComboBoxStyle.DropDownList;
-        _screenCaptureSourceBox.Width = 90;
+        _screenCaptureSourceBox.Width = 100;
+        _screenCaptureSourceBox.Items.Clear();
         _screenCaptureSourceBox.Items.Add(ScreenCaptureSource.DxgiPrimary);
         _screenCaptureSourceBox.Items.Add(ScreenCaptureSource.Primary);
         _screenCaptureSourceBox.Items.Add(ScreenCaptureSource.Virtual);
@@ -267,7 +383,16 @@ public sealed partial class SenderForm : Form
         screenOptionsPanel.Controls.Add(_screenCaptureSourceBox);
         screenLayout.Controls.Add(screenOptionsPanel, 0, 0);
 
-        var screenOncePanel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
+        var screenOncePanel = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = true,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Margin = new Padding(0, 8, 0, 0),
+            Padding = Padding.Empty,
+        };
         _sendScreenOnceAllButton.Text = "1フレーム全員";
         _sendScreenOnceAllButton.Width = 140;
         _sendScreenOnceAllButton.Enabled = false;
@@ -279,18 +404,27 @@ public sealed partial class SenderForm : Form
         screenOncePanel.Controls.Add(_sendScreenOnceSelectedButton);
         screenLayout.Controls.Add(screenOncePanel, 0, 1);
 
-        var screenStreamPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
-        _startScreenAllButton.Text = "動画配信 全員";
-        _startScreenAllButton.Width = 140;
+        var screenStreamPanel = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = true,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Margin = new Padding(0, 8, 0, 0),
+            Padding = Padding.Empty,
+        };
+        _startScreenAllButton.Text = "画面を共有する";
+        _startScreenAllButton.Width = 160;
         _startScreenAllButton.Enabled = false;
         screenStreamPanel.Controls.Add(_startScreenAllButton);
 
-        _startScreenSelectedButton.Text = "動画配信 選択先";
+        _startScreenSelectedButton.Text = "選択先へ共有";
         _startScreenSelectedButton.Width = 150;
         _startScreenSelectedButton.Enabled = false;
         screenStreamPanel.Controls.Add(_startScreenSelectedButton);
 
-        _stopScreenButton.Text = "配信停止";
+        _stopScreenButton.Text = "共有停止";
         _stopScreenButton.Width = 110;
         _stopScreenButton.Enabled = false;
         screenStreamPanel.Controls.Add(_stopScreenButton);
@@ -300,17 +434,55 @@ public sealed partial class SenderForm : Form
         _screenStatusLabel.Dock = DockStyle.Fill;
         _screenStatusLabel.TextAlign = ContentAlignment.MiddleLeft;
         screenLayout.Controls.Add(_screenStatusLabel, 0, 3);
-
         screenGroup.Controls.Add(screenLayout);
-        root.Controls.Add(screenGroup, 1, 4);
+        rightFlow.Controls.Add(screenGroup);
 
-        var logGroup = new GroupBox { Text = "ログ", Dock = DockStyle.Fill };
+        var logGroup = new GroupBox
+        {
+            Text = "ログ",
+            Width = rightColumnWidth,
+            Height = 180,
+            Margin = new Padding(0, 12, 0, 0),
+            Padding = new Padding(10),
+        };
         _logList.Dock = DockStyle.Fill;
         logGroup.Controls.Add(_logList);
-        root.Controls.Add(logGroup, 1, 5);
+        rightFlow.Controls.Add(logGroup);
 
-        scrollHost.SetContent(root, new Size(1120, 780));
-        Controls.Add(scrollHost);
+        mainArea.Controls.Add(rightFlow, 1, 0);
+
+        _pageContent.Controls.Add(serverPanel);
+        _pageContent.Controls.Add(mainArea);
+
+        Controls.Clear();
+        Controls.Add(_pageScrollHost);
+
+        ResumeLayout(true);
+    }
+
+    private void FinalizeResponsiveLayout()
+    {
+        if (_pageContent is null || _pageScrollHost is null)
+        {
+            return;
+        }
+
+        List<Control> extras = Controls
+            .Cast<Control>()
+            .Where(control => !ReferenceEquals(control, _pageScrollHost))
+            .OrderBy(control => control.Top)
+            .ThenBy(control => control.Left)
+            .ToList();
+
+        foreach (Control control in extras)
+        {
+            Controls.Remove(control);
+            control.Dock = DockStyle.None;
+            control.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+            control.Margin = new Padding(0, 12, 0, 0);
+            control.Width = SenderPageWidth;
+            _pageContent.Controls.Add(control);
+        }
     }
 
     private void StartServer()
@@ -1214,3 +1386,4 @@ private void StopScreenStream()
         return $"{value:0.##} {units[unit]}";
     }
 }
+
