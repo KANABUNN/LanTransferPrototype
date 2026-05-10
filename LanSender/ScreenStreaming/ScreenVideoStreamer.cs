@@ -262,3 +262,74 @@ public sealed record ScreenStreamStats(
     double FrameBudgetMs,
     double RemainingBudgetMs,
     bool HighResolutionTimerEnabled);
+internal sealed class ScreenStreamingPriorityScope : IDisposable
+{
+    private readonly Process _process;
+    private readonly ProcessPriorityClass _originalProcessPriority;
+    private readonly ThreadPriority _originalThreadPriority;
+    private bool _disposed;
+
+    private ScreenStreamingPriorityScope(
+        Process process,
+        ProcessPriorityClass originalProcessPriority,
+        ThreadPriority originalThreadPriority)
+    {
+        _process = process;
+        _originalProcessPriority = originalProcessPriority;
+        _originalThreadPriority = originalThreadPriority;
+    }
+
+    public static ScreenStreamingPriorityScope TryEnter()
+    {
+        Process process = Process.GetCurrentProcess();
+        ProcessPriorityClass originalProcessPriority = process.PriorityClass;
+        ThreadPriority originalThreadPriority = Thread.CurrentThread.Priority;
+
+        try
+        {
+            if (process.PriorityClass is ProcessPriorityClass.Idle or ProcessPriorityClass.BelowNormal or ProcessPriorityClass.Normal)
+            {
+                process.PriorityClass = ProcessPriorityClass.AboveNormal;
+            }
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            Thread.CurrentThread.Priority = ThreadPriority.Highest;
+        }
+        catch
+        {
+        }
+
+        return new ScreenStreamingPriorityScope(process, originalProcessPriority, originalThreadPriority);
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+
+        try
+        {
+            Thread.CurrentThread.Priority = _originalThreadPriority;
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            _process.PriorityClass = _originalProcessPriority;
+        }
+        catch
+        {
+        }
+    }
+}

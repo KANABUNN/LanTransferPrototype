@@ -103,24 +103,42 @@ public sealed class ScreenCaptureService
 
         try
         {
-            SetStretchBltMode(targetDc, COLORONCOLOR);
+            bool ok;
 
-            bool ok = StretchBlt(
-                targetDc,
-                0,
-                0,
-                destination.Width,
-                destination.Height,
-                desktopDc,
-                sourceBounds.Left,
-                sourceBounds.Top,
-                sourceBounds.Width,
-                sourceBounds.Height,
-                SRCCOPY | CAPTUREBLT);
+            if (destination.Width == sourceBounds.Width && destination.Height == sourceBounds.Height)
+            {
+                ok = BitBlt(
+                    targetDc,
+                    0,
+                    0,
+                    destination.Width,
+                    destination.Height,
+                    desktopDc,
+                    sourceBounds.Left,
+                    sourceBounds.Top,
+                    SRCCOPY | CAPTUREBLT);
+            }
+            else
+            {
+                SetStretchBltMode(targetDc, COLORONCOLOR);
+
+                ok = StretchBlt(
+                    targetDc,
+                    0,
+                    0,
+                    destination.Width,
+                    destination.Height,
+                    desktopDc,
+                    sourceBounds.Left,
+                    sourceBounds.Top,
+                    sourceBounds.Width,
+                    sourceBounds.Height,
+                    SRCCOPY | CAPTUREBLT);
+            }
 
             if (!ok)
             {
-                throw new InvalidOperationException($"StretchBlt failed. Win32Error={Marshal.GetLastWin32Error()}");
+                throw new InvalidOperationException($"Desktop copy failed. Win32Error={Marshal.GetLastWin32Error()}");
             }
         }
         finally
@@ -194,6 +212,17 @@ public sealed class ScreenCaptureService
 
     [DllImport("user32.dll")]
     private static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+    [DllImport("gdi32.dll", SetLastError = true)]
+    private static extern bool BitBlt(
+        IntPtr hdcDest,
+        int xDest,
+        int yDest,
+        int width,
+        int height,
+        IntPtr hdcSrc,
+        int xSrc,
+        int ySrc,
+        int rop);
 
     [DllImport("gdi32.dll", SetLastError = true)]
     private static extern bool StretchBlt(
