@@ -1,9 +1,12 @@
 using System.Text.Json;
+using System.Linq;
 using LanSender.ScreenStreaming;
 using LanShared.Contracts;
 using LanShared.Protocol;
 
 namespace LanSender;
+
+// v32 dynamic object compatibility
 
 public sealed partial class SenderForm
 {
@@ -54,20 +57,20 @@ public sealed partial class SenderForm
             return;
         }
 
-        List<ClientConnection> targets;
+        List<object> targets;
         if (selectedOnly)
         {
-            if (_clientList.SelectedItem is not ClientConnection selected)
+            if (_clientList.SelectedItem is not object selected)
             {
                 AddLog("Select a client first.");
                 return;
             }
 
-            targets = new List<ClientConnection> { selected };
+            targets = new List<object> { selected };
         }
         else
         {
-            targets = GetClientSnapshot();
+            targets = GetClientSnapshot().Cast<object>().ToList();
         }
 
         if (targets.Count == 0)
@@ -93,7 +96,7 @@ public sealed partial class SenderForm
         byte[] startPayload = JsonSerializer.SerializeToUtf8Bytes(info);
         foreach (var target in targets.ToList())
         {
-            await SendPacketToClientAsync(target, PacketType.ScreenH264Start, startPayload, CancellationToken.None);
+            await SendPacketToClientAsync((dynamic)target, PacketType.ScreenH264Start, startPayload, CancellationToken.None);
         }
 
         _h264Cts = new CancellationTokenSource();
@@ -120,7 +123,7 @@ public sealed partial class SenderForm
                     {
                         foreach (var target in targets.ToList())
                         {
-                            await SendPacketToClientAsync(target, PacketType.ScreenH264Data, chunk, ct);
+                            await SendPacketToClientAsync((dynamic)target, PacketType.ScreenH264Data, chunk, ct);
                         }
                     },
                     token);
@@ -141,7 +144,7 @@ public sealed partial class SenderForm
 
     private async Task StopH264TrialAsync(string reason)
     {
-        List<ClientConnection> targets = GetClientSnapshot();
+        List<object> targets = GetClientSnapshot().Cast<object>().ToList();
         try { _h264Cts?.Cancel(); } catch { }
         try { _h264Streamer?.Stop(); } catch { }
 
@@ -153,7 +156,7 @@ public sealed partial class SenderForm
         byte[] stopPayload = JsonSerializer.SerializeToUtf8Bytes(stopInfo);
         foreach (var target in targets)
         {
-            await SendPacketToClientAsync(target, PacketType.ScreenH264Stop, stopPayload, CancellationToken.None);
+            await SendPacketToClientAsync((dynamic)target, PacketType.ScreenH264Stop, stopPayload, CancellationToken.None);
         }
 
         try { _h264Cts?.Dispose(); } catch { }
