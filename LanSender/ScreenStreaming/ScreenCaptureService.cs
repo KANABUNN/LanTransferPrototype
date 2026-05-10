@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
@@ -8,6 +8,7 @@ namespace LanSender.ScreenStreaming;
 
 public sealed class ScreenCaptureService
 {
+    private readonly Lazy<DxgiDesktopCaptureService?> _dxgiPrimary = new(DxgiDesktopCaptureService.TryCreatePrimary);
     private static readonly ImageCodecInfo JpegCodec = ImageCodecInfo.GetImageEncoders()
         .First(codec => string.Equals(codec.MimeType, "image/jpeg", StringComparison.OrdinalIgnoreCase));
 
@@ -28,6 +29,18 @@ public sealed class ScreenCaptureService
         int scalePercent,
         string captureSource)
     {
+        if (string.Equals(captureSource, ScreenCaptureSource.DxgiPrimary, StringComparison.OrdinalIgnoreCase))
+        {
+            DxgiDesktopCaptureService? dxgi = _dxgiPrimary.Value;
+            ScreenFrame? dxgiFrame = dxgi?.TryCaptureDesktopJpeg(streamId, frameNo, jpegQuality, scalePercent);
+            if (dxgiFrame is not null)
+            {
+                return dxgiFrame;
+            }
+
+            captureSource = ScreenCaptureSource.Primary;
+        }
+
         Rectangle bounds = ResolveCaptureBounds(captureSource);
         jpegQuality = Math.Clamp(jpegQuality, 20, 95);
         scalePercent = Math.Clamp(scalePercent, 25, 100);

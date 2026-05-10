@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -216,7 +216,7 @@ public sealed partial class SenderForm : Form
         fileGroup.Controls.Add(fileLayout);
         root.Controls.Add(fileGroup, 1, 3);
 
-        var screenGroup = new GroupBox { Text = "画面配信（30FPS MJPEG）", Dock = DockStyle.Fill };
+        var screenGroup = new GroupBox { Text = "画面配信（DXGI/MJPEG 60FPS試験）", Dock = DockStyle.Fill };
         var screenLayout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 4, ColumnCount = 1, Padding = new Padding(8) };
         screenLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
         screenLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
@@ -250,9 +250,10 @@ public sealed partial class SenderForm : Form
         screenOptionsPanel.Controls.Add(new Label { Text = "Source:", AutoSize = true, Padding = new Padding(12, 6, 0, 0) });
         _screenCaptureSourceBox.DropDownStyle = ComboBoxStyle.DropDownList;
         _screenCaptureSourceBox.Width = 90;
+        _screenCaptureSourceBox.Items.Add(ScreenCaptureSource.DxgiPrimary);
         _screenCaptureSourceBox.Items.Add(ScreenCaptureSource.Primary);
         _screenCaptureSourceBox.Items.Add(ScreenCaptureSource.Virtual);
-        _screenCaptureSourceBox.SelectedItem = ScreenCaptureSource.Primary;
+        _screenCaptureSourceBox.SelectedItem = ScreenCaptureSource.DxgiPrimary;
         screenOptionsPanel.Controls.Add(_screenCaptureSourceBox);
         screenLayout.Controls.Add(screenOptionsPanel, 0, 0);
 

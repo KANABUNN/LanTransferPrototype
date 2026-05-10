@@ -38,16 +38,30 @@ public sealed class ScreenVideoStreamer
         bool highFpsMode = requestedTargetFps >= 45;
         bool adaptiveMode = options.EnableAdaptivePerformance || highFpsMode;
 
+        // v27 policy:
+        // Previous high-FPS adaptive logic tried to preserve FPS first, so it could cut Scale down to 50%.
+        // For screen monitoring, visual readability is more important than strict 60fps.
+        // Therefore we now reduce JPEG quality and effective FPS before reducing resolution.
         int currentQuality = requestedQuality;
         int currentScalePercent = requestedScalePercent;
-        int minQuality = highFpsMode ? Math.Clamp(options.HighFpsMinQuality, 40, requestedQuality) : 20;
-        int minScalePercent = highFpsMode ? Math.Clamp(options.HighFpsMinScalePercent, 40, requestedScalePercent) : 25;
+
+        int minQuality = highFpsMode ? Math.Clamp(options.HighFpsMinQuality, 35, requestedQuality) : 20;
+        int minScalePercent = highFpsMode
+            ? Math.Clamp(options.HighFpsMinScalePercent, 25, requestedScalePercent)
+            : 25;
         int minEffectiveFps = highFpsMode ? Math.Clamp(options.HighFpsMinEffectiveFps, 30, requestedTargetFps) : requestedTargetFps;
 
-        if (highFpsMode)
+        if (highFpsMode && options.PreferResolutionOverFps)
         {
-            currentQuality = Math.Min(currentQuality, options.HighFpsStartQuality);
-            currentScalePercent = Math.Min(currentScalePercent, options.HighFpsStartScalePercent);
+            // Keep the user-selected scale as the starting point.
+            // Only quality is slightly reduced at the beginning if the user requested a very high value.
+            currentScalePercent = requestedScalePercent;
+            currentQuality = Math.Min(currentQuality, Math.Clamp(options.HighFpsStartQuality, minQuality, requestedQuality));
+        }
+        else if (highFpsMode)
+        {
+            currentQuality = Math.Min(currentQuality, Math.Clamp(options.HighFpsStartQuality, minQuality, requestedQuality));
+            currentScalePercent = Math.Min(currentScalePercent, Math.Clamp(options.HighFpsStartScalePercent, minScalePercent, requestedScalePercent));
         }
 
         double frameIntervalTicks = Stopwatch.Frequency / (double)effectiveTargetFps;
@@ -65,7 +79,9 @@ public sealed class ScreenVideoStreamer
         var totalStopwatch = Stopwatch.StartNew();
         var statsStopwatch = Stopwatch.StartNew();
         double lastAdaptiveChangeSeconds = 0;
-        string adaptiveState = highFpsMode ? "adaptive high-fps warmup" : "fixed profile";
+        string adaptiveState = highFpsMode
+            ? (options.PreferResolutionOverFps ? "adaptive resolution priority warmup" : "adaptive high-fps warmup")
+            : "fixed profile";
 
         double lastCaptureMs = 0;
         double lastCopyMs = 0;
@@ -176,6 +192,7 @@ public sealed class ScreenVideoStreamer
                             minQuality,
                             minScalePercent,
                             minEffectiveFps,
+                            options.PreferResolutionOverFps,
                             recentFps,
                             marginMs,
                             recentLateFrames,
@@ -247,6 +264,7 @@ public sealed class ScreenVideoStreamer
         int minQuality,
         int minScalePercent,
         int minEffectiveFps,
+        bool preferResolutionOverFps,
         double recentFps,
         double marginMs,
         long recentLateFrames,
@@ -261,12 +279,40 @@ public sealed class ScreenVideoStreamer
         }
 
         bool overloaded = recentLateFrames > 0 || marginMs < 0.5 || recentFps < effectiveTargetFps * 0.92;
-        bool veryStable = recentLateFrames == 0 && marginMs > 3.0 && recentFps >= effectiveTargetFps * 0.97;
+        bool veryStable = recentLateFrames == 0 && marginMs > 4.0 && recentFps >= effectiveTargetFps * 0.97;
 
         if (overloaded)
         {
             lastAdaptiveChangeSeconds = elapsedSeconds;
 
+            if (preferResolutionOverFps)
+            {
+                // Resolution-priority order:
+                // 1. Lower JPEG quality first.
+                // 2. Lower effective FPS next.
+                // 3. Lower scale only as a last resort down to the configured floor.
+                if (currentQuality > minQuality)
+                {
+                    currentQuality = Math.Max(minQuality, currentQuality - 5);
+                    return EffectiveState($"adaptive quality down -> {currentQuality}; resolution priority", requestedTargetFps, effectiveTargetFps);
+                }
+
+                if (effectiveTargetFps > minEffectiveFps)
+                {
+                    effectiveTargetFps = Math.Max(minEffectiveFps, effectiveTargetFps - 5);
+                    return EffectiveState($"adaptive fps fallback -> {effectiveTargetFps}fps; resolution priority", requestedTargetFps, effectiveTargetFps);
+                }
+
+                if (currentScalePercent > minScalePercent)
+                {
+                    currentScalePercent = Math.Max(minScalePercent, currentScalePercent - 5);
+                    return EffectiveState($"adaptive scale floor -> {currentScalePercent}%; last resort", requestedTargetFps, effectiveTargetFps);
+                }
+
+                return EffectiveState("adaptive minimum resolution-priority profile", requestedTargetFps, effectiveTargetFps);
+            }
+
+            // Legacy motion-priority order.
             if (currentScalePercent > minScalePercent)
             {
                 currentScalePercent = Math.Max(minScalePercent, currentScalePercent - 5);
@@ -292,7 +338,30 @@ public sealed class ScreenVideoStreamer
         {
             lastAdaptiveChangeSeconds = elapsedSeconds;
 
-            // Keep FPS recovery conservative. FPS first, then quality/scale.
+            if (preferResolutionOverFps)
+            {
+                // Recovery also prioritizes readability.
+                if (currentScalePercent < requestedScalePercent && marginMs > 4.0)
+                {
+                    currentScalePercent = Math.Min(requestedScalePercent, currentScalePercent + 5);
+                    return EffectiveState($"adaptive scale up -> {currentScalePercent}%; resolution priority", requestedTargetFps, effectiveTargetFps);
+                }
+
+                if (currentQuality < requestedQuality && marginMs > 3.0)
+                {
+                    currentQuality = Math.Min(requestedQuality, currentQuality + 5);
+                    return EffectiveState($"adaptive quality up -> {currentQuality}; resolution priority", requestedTargetFps, effectiveTargetFps);
+                }
+
+                if (effectiveTargetFps < requestedTargetFps && marginMs > 5.0)
+                {
+                    effectiveTargetFps = Math.Min(requestedTargetFps, effectiveTargetFps + 5);
+                    return EffectiveState($"adaptive fps up -> {effectiveTargetFps}fps; resolution priority", requestedTargetFps, effectiveTargetFps);
+                }
+
+                return EffectiveState("adaptive resolution-priority stable", requestedTargetFps, effectiveTargetFps);
+            }
+
             if (effectiveTargetFps < requestedTargetFps && marginMs > 4.0)
             {
                 effectiveTargetFps = Math.Min(requestedTargetFps, effectiveTargetFps + 5);
@@ -314,7 +383,7 @@ public sealed class ScreenVideoStreamer
             return EffectiveState("adaptive full profile", requestedTargetFps, effectiveTargetFps);
         }
 
-        return EffectiveState("adaptive stable", requestedTargetFps, effectiveTargetFps);
+        return EffectiveState(preferResolutionOverFps ? "adaptive resolution-priority stable" : "adaptive stable", requestedTargetFps, effectiveTargetFps);
     }
 
     private static string EffectiveState(string state, int requestedTargetFps, int effectiveTargetFps)
@@ -407,13 +476,17 @@ public sealed class ScreenVideoOptions
     public int ScalePercent { get; init; } = 60;
     public string CaptureSource { get; init; } = ScreenCaptureSource.Primary;
     public bool EnableAdaptivePerformance { get; init; } = true;
-    public int HighFpsStartScalePercent { get; init; } = 75;
+
+    // v27 default: readability first.
+    // In high FPS mode, start from the user-selected scale instead of immediately shrinking.
+    public bool PreferResolutionOverFps { get; init; } = true;
+    public int HighFpsStartScalePercent { get; init; } = 100;
     public int HighFpsStartQuality { get; init; } = 65;
-    public int HighFpsMinScalePercent { get; init; } = 50;
+    public int HighFpsMinScalePercent { get; init; } = 85;
     public int HighFpsMinQuality { get; init; } = 50;
 
-    // MJPEG/GDI fallback floor. If 60fps cannot be maintained even at minimum quality/scale,
-    // the effective target is reduced to avoid unstable latency.
+    // If 60fps cannot be maintained while keeping readable resolution,
+    // reduce the effective target FPS instead of shrinking to 50%.
     public int HighFpsMinEffectiveFps { get; init; } = 45;
 }
 
@@ -421,6 +494,7 @@ public static class ScreenCaptureSource
 {
     public const string Primary = "Primary";
     public const string Virtual = "Virtual";
+    public const string DxgiPrimary = "DxgiPrimary";
 }
 
 public sealed record ScreenStreamStats(
