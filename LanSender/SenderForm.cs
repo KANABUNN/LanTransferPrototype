@@ -989,11 +989,11 @@ _ = Task.Run(async () =>
         string phase = stats.IsWarmingUp ? "warmup" : "stable";
         string timer = stats.TimerResolutionRequested ? "1ms" : "default";
         double frameKb = stats.LastFrameBytes / 1024.0;
+        string adaptive = stats.AdaptiveMode ? $" / q {stats.Quality} / {stats.AdaptiveState}" : $" / q {stats.Quality}";
 
-        return $"動画配信中: target {stats.TargetFps}fps / actual {stats.RecentFps:0.0}fps / avg {stats.AverageFps:0.0}fps / {phase} / scale {stats.ScalePercent}% / source {stats.CaptureSource} / cap {stats.CaptureMs:0.0}ms (copy {stats.CopyMs:0.0} enc {stats.EncodeMs:0.0}) / send {stats.SendMs:0.0}ms / loop {stats.LoopMs:0.0}ms / margin {stats.MarginMs:0.0}ms / late +{stats.RecentLateFrames}/total {stats.TotalLateFrames} / {frameKb:0.#} KB / {stats.RecentMbps:0.0} Mbps / timer {timer}";
+        return $"動画配信中: target {stats.TargetFps}fps / actual {stats.RecentFps:0.0}fps / avg {stats.AverageFps:0.0}fps / {phase} / scale {stats.ScalePercent}% / source {stats.CaptureSource}{adaptive} / cap {stats.CaptureMs:0.0}ms (copy {stats.CopyMs:0.0} enc {stats.EncodeMs:0.0}) / send {stats.SendMs:0.0}ms / loop {stats.LoopMs:0.0}ms / margin {stats.MarginMs:0.0}ms / late +{stats.RecentLateFrames}/total {stats.TotalLateFrames} / {frameKb:0.#} KB / {stats.RecentMbps:0.0} Mbps / timer {timer}";
     }
-
-    private void StopScreenStream()
+private void StopScreenStream()
     {
         if (!_isStreamingScreen || _screenStreamCts is null) return;
         _screenStreamCts.Cancel();
