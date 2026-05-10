@@ -598,6 +598,11 @@ public sealed partial class ReceiverForm : Form
             Stream = stream,
         };
 
+        if (!_batchActive)
+        {
+            _batchStopwatch.Restart();
+        }
+
         UpdateProgress(_batchReceivedBytes, Math.Max(_batchExpectedBytes > 0 ? _batchExpectedBytes : info.FileSize, 1), $"Receiving: {safeRelativePath}");
         AddLog($"File receive start: {safeRelativePath} / {FormatBytes(info.FileSize)}");
     }
@@ -668,6 +673,16 @@ public sealed partial class ReceiverForm : Form
             long displayTotal = _batchActive ? Math.Max(_batchExpectedBytes, 1) : Math.Max(fileSize, 1);
             long displayCurrent = _batchActive ? _batchReceivedBytes : receivedBytes;
             UpdateProgress(displayCurrent, displayTotal, $"File received: {fileName}");
+
+            if (!_batchActive)
+            {
+                _batchStopwatch.Stop();
+
+                if (GetOpenFolderAfterReceive())
+                {
+                    OpenSaveFolder();
+                }
+            }
 
             if (openAfterReceive)
             {
