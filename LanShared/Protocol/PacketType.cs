@@ -20,6 +20,10 @@ public static class PacketType
     public const byte KeepAlive = 12;
     public const byte OpenTargetResult = 13;
 
+    public const byte ScreenH264Start = 20;
+    public const byte ScreenH264Data = 21;
+    public const byte ScreenH264Stop = 22;
+
     public static string ToName(byte type) => type switch
     {
         TextMessage => nameof(TextMessage),
@@ -35,6 +39,9 @@ public static class PacketType
         ScreenVideoStop => nameof(ScreenVideoStop),
         KeepAlive => nameof(KeepAlive),
         OpenTargetResult => nameof(OpenTargetResult),
+        ScreenH264Start => nameof(ScreenH264Start),
+        ScreenH264Data => nameof(ScreenH264Data),
+        ScreenH264Stop => nameof(ScreenH264Stop),
         _ => $"Unknown({type})",
     };
 }

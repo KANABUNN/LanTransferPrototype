@@ -68,6 +68,7 @@ public sealed partial class SenderForm : Form
 
         BuildUi();
         InitializeOpenTargetFeature();
+        InitializeH264Feature();
 
         _startButton.Click += (_, _) => StartServer();
         _stopButton.Click += (_, _) => StopServer();

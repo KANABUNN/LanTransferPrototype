@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
@@ -65,6 +65,7 @@ public sealed partial class ReceiverForm : Form
 
         BuildUi();
         InitializeOpenTargetFeature();
+        InitializeH264ReceiverFeature();
 
         _connectButton.Click += async (_, _) => await ConnectAsync();
         _disconnectButton.Click += (_, _) => DisconnectByUser();
@@ -76,6 +77,7 @@ public sealed partial class ReceiverForm : Form
         FormClosing += (_, _) =>
         {
             CloseFullScreenMonitor();
+            StopH264Player();
             DisconnectSilent();
             _lastScreenImage?.Dispose();
         };
@@ -380,6 +382,18 @@ public sealed partial class ReceiverForm : Form
                 await HandleOpenTargetCommandAsync(packet.Payload);
                 break;
 
+
+            case PacketType.ScreenH264Start:
+                await HandleH264StreamStartAsync(packet.Payload);
+                break;
+
+            case PacketType.ScreenH264Data:
+                await HandleH264StreamDataAsync(packet.Payload);
+                break;
+
+            case PacketType.ScreenH264Stop:
+                HandleH264StreamStop(packet.Payload);
+                break;
             default:
                 AddLog($"Unsupported packet: {PacketType.ToName(packet.Type)}");
                 break;
