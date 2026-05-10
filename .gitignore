@@ -6,6 +6,7 @@
 # Custom
 *.zip
 *.ps1
+*.diff
 _backup*
 *.bak*
 files/

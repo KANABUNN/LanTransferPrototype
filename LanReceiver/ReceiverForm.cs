@@ -705,7 +705,7 @@ public sealed partial class ReceiverForm : Form
         AddLog($"Batch receive done: {_batchReceivedFiles}/{_batchExpectedFiles} files / {FormatBytes(_batchReceivedBytes)}");
         UpdateProgress(1000, 1000, $"Batch receive done: {_batchReceivedFiles}/{_batchExpectedFiles} files");
 
-        bool shouldOpen = _openFolderAfterReceiveCheck.Checked;
+        bool shouldOpen = GetOpenFolderAfterReceive();
         ResetBatchState();
 
         if (shouldOpen)
@@ -793,13 +793,31 @@ public sealed partial class ReceiverForm : Form
 
     private void OpenSaveFolder()
     {
-        string folder = GetSaveFolder();
-        Directory.CreateDirectory(folder);
-        Process.Start(new ProcessStartInfo
+        if (IsDisposed)
         {
-            FileName = folder,
-            UseShellExecute = true,
-        });
+            return;
+        }
+
+        if (InvokeRequired)
+        {
+            BeginInvoke(new Action(OpenSaveFolder));
+            return;
+        }
+
+        try
+        {
+            string folder = GetSaveFolder();
+            Directory.CreateDirectory(folder);
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = folder,
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            AddLog($"Open save folder failed: {ex.Message}");
+        }
     }
 
     private void OpenFullScreenMonitor()
@@ -858,14 +876,39 @@ public sealed partial class ReceiverForm : Form
 
     private string GetSaveFolder()
     {
+        if (IsDisposed)
+        {
+            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "LanReceivedFiles");
+        }
+
+        if (InvokeRequired)
+        {
+            return (string)Invoke(new Func<string>(GetSaveFolder));
+        }
+
         string folder = _saveFolderBox.Text.Trim();
         if (string.IsNullOrWhiteSpace(folder))
         {
             folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "LanReceivedFiles");
+            _saveFolderBox.Text = folder;
         }
         return folder;
     }
 
+    private bool GetOpenFolderAfterReceive()
+    {
+        if (IsDisposed)
+        {
+            return false;
+        }
+
+        if (InvokeRequired)
+        {
+            return (bool)Invoke(new Func<bool>(GetOpenFolderAfterReceive));
+        }
+
+        return _openFolderAfterReceiveCheck.Checked;
+    }
     private static string SanitizeRelativePath(string relativePath)
     {
         string[] parts = relativePath.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries);
