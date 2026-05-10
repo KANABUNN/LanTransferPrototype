@@ -1,0 +1,10 @@
+﻿{
+  "FfmpegPath": null,
+  "Encoder": "libx264",
+  "Fps": 60,
+  "ScalePercent": 100,
+  "BitrateKbps": 12000,
+  "Preset": "ultrafast",
+  "LogLevel": "warning",
+  "ChunkSizeBytes": 65536
+}
