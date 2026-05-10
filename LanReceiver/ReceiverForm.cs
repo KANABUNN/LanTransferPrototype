@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
@@ -50,6 +50,11 @@ public sealed partial class ReceiverForm : Form
     private Form? _fullScreenForm;
     private PictureBox? _fullScreenPicture;
     private string? _activeStreamId;
+    private readonly object _screenDecodeLock = new();
+    private byte[]? _pendingScreenFramePayload;
+    private bool _screenDecodeWorkerRunning;
+    private long _screenFramesDroppedBeforeDecode;
+    private long _screenFramesDisplayed;
 
     public ReceiverForm()
     {
@@ -404,17 +409,67 @@ public sealed partial class ReceiverForm : Form
 
     private void HandleScreenFrame(byte[] payload)
     {
-        try
+        bool startWorker = false;
+
+        lock (_screenDecodeLock)
         {
-            DecodedScreenFrame decoded = ScreenFrameDecoder.Decode(payload);
-            UpdateScreenFrame(decoded.Image, decoded.Info, decoded.ByteSize);
+            if (_pendingScreenFramePayload is not null)
+            {
+                _screenFramesDroppedBeforeDecode++;
+            }
+
+            _pendingScreenFramePayload = payload;
+
+            if (!_screenDecodeWorkerRunning)
+            {
+                _screenDecodeWorkerRunning = true;
+                startWorker = true;
+            }
         }
-        catch (Exception ex)
+
+        if (startWorker)
         {
-            AddLog($"Screen frame receive failed: {ex.Message}");
+            _ = Task.Run(ProcessLatestScreenFramesAsync);
         }
     }
 
+    private async Task ProcessLatestScreenFramesAsync()
+    {
+        while (!IsDisposed)
+        {
+            byte[]? payload;
+
+            lock (_screenDecodeLock)
+            {
+                payload = _pendingScreenFramePayload;
+                _pendingScreenFramePayload = null;
+
+                if (payload is null)
+                {
+                    _screenDecodeWorkerRunning = false;
+                    return;
+                }
+            }
+
+            try
+            {
+                DecodedScreenFrame decoded = ScreenFrameDecoder.Decode(payload);
+                Interlocked.Increment(ref _screenFramesDisplayed);
+                UpdateScreenFrame(decoded.Image, decoded.Info, decoded.ByteSize);
+            }
+            catch (Exception ex)
+            {
+                AddLog($"Screen frame decode failed: {ex.Message}");
+            }
+
+            await Task.Yield();
+        }
+
+        lock (_screenDecodeLock)
+        {
+            _screenDecodeWorkerRunning = false;
+        }
+    }
     private void HandleScreenVideoStop(byte[] payload)
     {
         string reason = "stopped";
@@ -459,7 +514,9 @@ public sealed partial class ReceiverForm : Form
         }
 
         old?.Dispose();
-        _screenInfoLabel.Text = $"Frame {info.FrameNo} / {info.Width}x{info.Height} / {FormatBytes(byteSize)} / {_activeStreamId ?? "single"} / {DateTime.Now:HH:mm:ss}";
+        long shownFrames = Interlocked.Read(ref _screenFramesDisplayed);
+        long droppedBeforeDecode = Interlocked.Read(ref _screenFramesDroppedBeforeDecode);
+        _screenInfoLabel.Text = $"Frame {info.FrameNo} / {info.Width}x{info.Height} / {FormatBytes(byteSize)} / {_activeStreamId ?? "single"} / shown {shownFrames} / decodeDrop {droppedBeforeDecode} / {DateTime.Now:HH:mm:ss}";
 
         if (_autoFullScreenCheck.Checked && _fullScreenForm is null)
         {
