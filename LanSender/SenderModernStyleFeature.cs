@@ -1,4 +1,6 @@
+using System.ComponentModel;
 using System.Drawing;
+using System.Reflection;
 
 namespace LanSender;
 
@@ -17,10 +19,33 @@ public sealed partial class SenderForm
     private static readonly Color ModernAccentHover = Color.FromArgb(48, 66, 92);
     private static readonly Color ModernDanger = Color.FromArgb(92, 40, 48);
 
+    private static readonly string[] PreferredH264StartMethodNames =
+    {
+        "StartH264ScreenStreamAsync",
+        "StartH264StreamAsync",
+        "StartH264StreamingAsync",
+        "StartH264VideoStreamAsync",
+        "StartH264ScreenShareAsync",
+        "StartH264ShareAsync",
+        "StartScreenH264StreamAsync",
+    };
+
+    private static readonly string[] PreferredH264StopMethodNames =
+    {
+        "StopH264ScreenStream",
+        "StopH264Stream",
+        "StopH264Streaming",
+        "StopH264VideoStream",
+        "StopH264ScreenShare",
+        "StopH264Share",
+        "StopScreenH264Stream",
+    };
+
     private readonly NotifyIcon _senderTrayIcon = new();
     private readonly ContextMenuStrip _senderTrayMenu = new();
     private SenderQuickActionForm? _senderQuickActionForm;
     private bool _modernFeatureInitialized;
+    private bool _screenShareButtonsRebound;
     private bool _allowActualClose;
 
     protected override void OnShown(EventArgs e)
@@ -35,6 +60,8 @@ public sealed partial class SenderForm
         _modernFeatureInitialized = true;
         Text = "LAN Transfer Sender";
 
+        ApplyScreenSharingDefaults();
+        RebindScreenSharingButtonsForPreferredCodec();
         ApplyModernThemeTree(this);
         RewriteModernLabels();
         InitializeSenderTrayFeature();
@@ -102,11 +129,8 @@ public sealed partial class SenderForm
         var stopItem = new ToolStripMenuItem("Stop server");
         stopItem.Click += (_, _) => StopServer();
 
-        var shareItem = new ToolStripMenuItem("Share screen");
+        var shareItem = new ToolStripMenuItem("Share screen (H.264)");
         shareItem.Click += async (_, _) => await QuickToggleScreenShareAsync();
-
-        var openBrowserItem = new ToolStripMenuItem("Open browser");
-        openBrowserItem.Click += async (_, _) => await QuickOpenBrowserAsync();
 
         var exitItem = new ToolStripMenuItem("Exit");
         exitItem.Click += (_, _) =>
@@ -124,7 +148,6 @@ public sealed partial class SenderForm
             stopItem,
             new ToolStripSeparator(),
             shareItem,
-            openBrowserItem,
             new ToolStripSeparator(),
             exitItem,
         });
@@ -140,16 +163,16 @@ public sealed partial class SenderForm
     {
         _senderQuickActionForm = new SenderQuickActionForm(
             QuickToggleScreenShareAsync,
-            QuickOpenBrowserAsync,
-            () => _isStreamingScreen);
+            IsAnyScreenSharingActive);
         _senderQuickActionForm.Show();
     }
 
     private async Task QuickToggleScreenShareAsync()
     {
-        if (_isStreamingScreen)
+        if (IsAnyScreenSharingActive())
         {
-            StopScreenStream();
+            StopPreferredScreenShare();
+            _senderQuickActionForm?.RefreshState();
             return;
         }
 
@@ -158,49 +181,315 @@ public sealed partial class SenderForm
             StartServer();
         }
 
-        await StartScreenStreamAsync(selectedOnly: false);
+        await StartPreferredScreenShareAsync(selectedOnly: false);
+        _senderQuickActionForm?.RefreshState();
     }
 
-    private async Task QuickOpenBrowserAsync()
+    private async Task StartPreferredScreenShareAsync(bool selectedOnly)
     {
-        if (_serverCts is null)
+        if (_isSendingFile)
         {
-            StartServer();
-        }
-
-        if (!string.IsNullOrWhiteSpace(_manualOpenUrlBox.Text))
-        {
-            await SendManualUrlToAllAsync();
+            AddLog("ファイル送信が終わってから画面共有を開始してください。");
             return;
         }
 
-        RefreshOpenTargetList();
-
-        WindowTargetCandidate? browserCandidate = null;
-        foreach (object? item in _openTargetList.Items)
+        if (IsAnyScreenSharingActive())
         {
-            if (item is not WindowTargetCandidate candidate)
+            AddLog("すでに画面共有中です。");
+            return;
+        }
+
+        if (TryPerformH264StartButtonClick(selectedOnly))
+        {
+            return;
+        }
+
+        if (await TryInvokeH264StartMethodAsync(selectedOnly))
+        {
+            return;
+        }
+
+        AddLog("H.264 screen sharing entry point was not found. Falling back to DXGI/MJPEG screen streaming.");
+        await StartScreenStreamAsync(selectedOnly);
+    }
+
+    private void StopPreferredScreenShare()
+    {
+        if (TryPerformH264StopButtonClick())
+        {
+            return;
+        }
+
+        if (TryInvokeH264StopMethod())
+        {
+            return;
+        }
+
+        StopScreenStream();
+    }
+
+    private void ApplyScreenSharingDefaults()
+    {
+        if (_screenScaleBox.Minimum <= 100 && _screenScaleBox.Maximum >= 100)
+        {
+            _screenScaleBox.Value = 100;
+        }
+    }
+
+    private void RebindScreenSharingButtonsForPreferredCodec()
+    {
+        if (_screenShareButtonsRebound)
+        {
+            return;
+        }
+
+        bool reboundAll = TryReplaceClickHandlers(
+            _startScreenAllButton,
+            async (_, _) => await StartPreferredScreenShareAsync(selectedOnly: false));
+
+        bool reboundSelected = TryReplaceClickHandlers(
+            _startScreenSelectedButton,
+            async (_, _) => await StartPreferredScreenShareAsync(selectedOnly: true));
+
+        bool reboundStop = TryReplaceClickHandlers(
+            _stopScreenButton,
+            (_, _) => StopPreferredScreenShare());
+
+        _screenShareButtonsRebound = reboundAll && reboundSelected && reboundStop;
+
+        if (!_screenShareButtonsRebound)
+        {
+            AddLog("Screen sharing buttons could not be rebound. Existing handlers were kept.");
+        }
+    }
+
+    private bool TryPerformH264StartButtonClick(bool selectedOnly)
+    {
+        Button? button = FindH264Button(
+            requiredKeyword: "start",
+            selectedOnly: selectedOnly)
+            ?? FindH264Button(
+                requiredKeyword: "share",
+                selectedOnly: selectedOnly)
+            ?? FindH264Button(
+                requiredKeyword: "stream",
+                selectedOnly: selectedOnly);
+
+        if (button is null || !button.Enabled)
+        {
+            return false;
+        }
+
+        button.PerformClick();
+        return true;
+    }
+
+    private bool TryPerformH264StopButtonClick()
+    {
+        Button? button = FindH264Button(requiredKeyword: "stop", selectedOnly: null);
+
+        if (button is null || !button.Enabled)
+        {
+            return false;
+        }
+
+        button.PerformClick();
+        return true;
+    }
+
+    private Button? FindH264Button(string requiredKeyword, bool? selectedOnly)
+    {
+        foreach (FieldInfo field in GetType().GetFields(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public))
+        {
+            if (!typeof(Button).IsAssignableFrom(field.FieldType))
             {
                 continue;
             }
 
-            string processName = candidate.ProcessName.ToLowerInvariant();
-            if (processName is "chrome" or "msedge" or "firefox" or "brave" or "vivaldi" or "opera" or "iexplore")
+            string name = field.Name;
+            if (!ContainsIgnoreCase(name, "h264") || !ContainsIgnoreCase(name, requiredKeyword))
             {
-                browserCandidate = candidate;
-                break;
+                continue;
+            }
+
+            if (selectedOnly == true && !(ContainsIgnoreCase(name, "selected") || ContainsIgnoreCase(name, "one")))
+            {
+                continue;
+            }
+
+            if (selectedOnly == false && (ContainsIgnoreCase(name, "selected") || ContainsIgnoreCase(name, "one")))
+            {
+                continue;
+            }
+
+            if (field.GetValue(this) is Button button)
+            {
+                return button;
             }
         }
 
-        if (browserCandidate is null)
+        return null;
+    }
+
+    private async Task<bool> TryInvokeH264StartMethodAsync(bool selectedOnly)
+    {
+        foreach (MethodInfo method in EnumeratePreferredH264StartMethods())
         {
-            AddLog("Browser window was not found. Enter a URL in Manual URL open, or open a browser first.");
-            RestoreSenderWindow();
-            return;
+            object?[]? args = BuildH264StartArguments(method, selectedOnly);
+
+            if (args is null)
+            {
+                continue;
+            }
+
+            try
+            {
+                object? result = method.Invoke(this, args);
+
+                if (result is Task task)
+                {
+                    await task;
+                }
+
+                return true;
+            }
+            catch (TargetInvocationException ex)
+            {
+                AddLog($"H.264 screen sharing failed: {ex.InnerException?.Message ?? ex.Message}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                AddLog($"H.264 screen sharing failed: {ex.Message}");
+                return true;
+            }
         }
 
-        _openTargetList.SelectedItem = browserCandidate;
-        await SendOpenTargetToAllAsync();
+        return false;
+    }
+
+    private bool TryInvokeH264StopMethod()
+    {
+        foreach (MethodInfo method in EnumeratePreferredH264StopMethods())
+        {
+            if (method.GetParameters().Length != 0)
+            {
+                continue;
+            }
+
+            try
+            {
+                object? result = method.Invoke(this, Array.Empty<object?>());
+
+                if (result is Task task)
+                {
+                    _ = task;
+                }
+
+                return true;
+            }
+            catch (TargetInvocationException ex)
+            {
+                AddLog($"H.264 screen sharing stop failed: {ex.InnerException?.Message ?? ex.Message}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                AddLog($"H.264 screen sharing stop failed: {ex.Message}");
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private IEnumerable<MethodInfo> EnumeratePreferredH264StartMethods()
+    {
+        MethodInfo[] methods = GetType().GetMethods(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+
+        foreach (string methodName in PreferredH264StartMethodNames)
+        {
+            foreach (MethodInfo method in methods.Where(x => string.Equals(x.Name, methodName, StringComparison.OrdinalIgnoreCase)))
+            {
+                yield return method;
+            }
+        }
+
+        foreach (MethodInfo method in methods)
+        {
+            if (ContainsIgnoreCase(method.Name, "h264") && ContainsIgnoreCase(method.Name, "start"))
+            {
+                yield return method;
+            }
+        }
+    }
+
+    private IEnumerable<MethodInfo> EnumeratePreferredH264StopMethods()
+    {
+        MethodInfo[] methods = GetType().GetMethods(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+
+        foreach (string methodName in PreferredH264StopMethodNames)
+        {
+            foreach (MethodInfo method in methods.Where(x => string.Equals(x.Name, methodName, StringComparison.OrdinalIgnoreCase)))
+            {
+                yield return method;
+            }
+        }
+
+        foreach (MethodInfo method in methods)
+        {
+            if (ContainsIgnoreCase(method.Name, "h264") && ContainsIgnoreCase(method.Name, "stop"))
+            {
+                yield return method;
+            }
+        }
+    }
+
+    private static object?[]? BuildH264StartArguments(MethodInfo method, bool selectedOnly)
+    {
+        ParameterInfo[] parameters = method.GetParameters();
+
+        if (parameters.Length == 0)
+        {
+            return Array.Empty<object?>();
+        }
+
+        if (parameters.Length == 1 && parameters[0].ParameterType == typeof(bool))
+        {
+            return new object?[] { selectedOnly };
+        }
+
+        return null;
+    }
+
+    private bool IsAnyScreenSharingActive()
+    {
+        if (_isStreamingScreen)
+        {
+            return true;
+        }
+
+        foreach (FieldInfo field in GetType().GetFields(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public))
+        {
+            string name = field.Name;
+            if (!ContainsIgnoreCase(name, "h264"))
+            {
+                continue;
+            }
+
+            object? value = field.GetValue(this);
+            if (value is bool flag && flag && (ContainsIgnoreCase(name, "stream") || ContainsIgnoreCase(name, "share")))
+            {
+                return true;
+            }
+
+            if (value is CancellationTokenSource cts && !cts.IsCancellationRequested)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private void RestoreSenderWindow()
@@ -211,6 +500,7 @@ public sealed partial class SenderForm
         Activate();
         _senderQuickActionForm?.Show();
         _senderQuickActionForm?.MoveToBottomRight();
+        _senderQuickActionForm?.RefreshState();
     }
 
     private void MinimizeSenderToTray(bool showBalloon)
@@ -220,6 +510,7 @@ public sealed partial class SenderForm
         Hide();
         _senderQuickActionForm?.Show();
         _senderQuickActionForm?.MoveToBottomRight();
+        _senderQuickActionForm?.RefreshState();
 
         if (showBalloon && _senderTrayIcon.Visible)
         {
@@ -242,6 +533,7 @@ public sealed partial class SenderForm
         _startScreenAllButton.Text = "画面を共有する";
         _startScreenSelectedButton.Text = "選択先へ共有";
         _stopScreenButton.Text = "共有停止";
+        _screenStatusLabel.Text = "H.264画面共有を通常使用 / DXGIスケール100%";
 
         _refreshOpenTargetsButton.Text = "一覧更新";
         _sendOpenTargetAllButton.Text = "ブラウザを開く";
@@ -342,6 +634,67 @@ public sealed partial class SenderForm
         button.Height = Math.Max(button.Height, 32);
         button.Margin = new Padding(4, 3, 4, 3);
         button.Cursor = Cursors.Hand;
+    }
+
+    private static bool TryReplaceClickHandlers(Control control, EventHandler handler)
+    {
+        if (!TryClearClickHandlers(control))
+        {
+            return false;
+        }
+
+        control.Click += handler;
+        return true;
+    }
+
+    private static bool TryClearClickHandlers(Control control)
+    {
+        object? clickEventKey = GetControlClickEventKey();
+        if (clickEventKey is null)
+        {
+            return false;
+        }
+
+        PropertyInfo? eventsProperty = typeof(Component).GetProperty("Events", BindingFlags.Instance | BindingFlags.NonPublic);
+        if (eventsProperty?.GetValue(control) is not EventHandlerList events)
+        {
+            return false;
+        }
+
+        Delegate? existing = events[clickEventKey];
+        if (existing is not null)
+        {
+            events.RemoveHandler(clickEventKey, existing);
+        }
+
+        return true;
+    }
+
+    private static object? GetControlClickEventKey()
+    {
+        string[] candidateNames =
+        {
+            "s_clickEvent",
+            "EventClick",
+            "ClickEvent",
+        };
+
+        foreach (string candidateName in candidateNames)
+        {
+            FieldInfo? field = typeof(Control).GetField(candidateName, BindingFlags.Static | BindingFlags.NonPublic);
+            object? value = field?.GetValue(null);
+            if (value is not null)
+            {
+                return value;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool ContainsIgnoreCase(string value, string keyword)
+    {
+        return value.Contains(keyword, StringComparison.OrdinalIgnoreCase);
     }
 
     private static Icon TryGetApplicationIcon()
