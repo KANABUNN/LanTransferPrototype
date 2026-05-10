@@ -858,6 +858,9 @@ public sealed partial class SenderForm : Form
             Quality = (int)_screenQualityBox.Value,
             ScalePercent = (int)_screenScaleBox.Value,
             CaptureSource = _screenCaptureSourceBox.SelectedItem?.ToString() ?? ScreenCaptureSource.Primary,
+            EnableAdaptivePerformance = false,
+            PreferResolutionOverFps = true,
+            HighFpsMinScalePercent = (int)_screenScaleBox.Value,
         };
 
         List<ClientConnection> InitialTargets() => selectedOnly ? fixedTargets.ToList() : GetClientSnapshot();

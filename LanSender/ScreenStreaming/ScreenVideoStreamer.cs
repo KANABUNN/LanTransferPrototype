@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 
 namespace LanSender.ScreenStreaming;
@@ -36,7 +36,7 @@ public sealed class ScreenVideoStreamer
             : options.CaptureSource;
 
         bool highFpsMode = requestedTargetFps >= 45;
-        bool adaptiveMode = options.EnableAdaptivePerformance || highFpsMode;
+        bool adaptiveMode = options.EnableAdaptivePerformance;
 
         // v27 policy:
         // Previous high-FPS adaptive logic tried to preserve FPS first, so it could cut Scale down to 50%.
@@ -475,14 +475,14 @@ public sealed class ScreenVideoOptions
     public int Quality { get; init; } = 70;
     public int ScalePercent { get; init; } = 60;
     public string CaptureSource { get; init; } = ScreenCaptureSource.Primary;
-    public bool EnableAdaptivePerformance { get; init; } = true;
+    public bool EnableAdaptivePerformance { get; init; } = false;
 
     // v27 default: readability first.
     // In high FPS mode, start from the user-selected scale instead of immediately shrinking.
     public bool PreferResolutionOverFps { get; init; } = true;
     public int HighFpsStartScalePercent { get; init; } = 100;
     public int HighFpsStartQuality { get; init; } = 65;
-    public int HighFpsMinScalePercent { get; init; } = 85;
+    public int HighFpsMinScalePercent { get; init; } = 100;
     public int HighFpsMinQuality { get; init; } = 50;
 
     // If 60fps cannot be maintained while keeping readable resolution,
