@@ -6,6 +6,7 @@ using LanReceiver.Contracts;
 using LanReceiver.Protocol;
 using LanReceiver.ScreenStreaming;
 using LanReceiver.Transfers;
+using LanShared.Ui;
 
 namespace LanReceiver;
 
@@ -61,6 +62,7 @@ public sealed partial class ReceiverForm : Form
         Text = "LAN Receiver - Screen Video Refactor";
         Width = 1080;
         Height = 820;
+        MinimumSize = new Size(720, 520);
         StartPosition = FormStartPosition.CenterScreen;
 
         BuildUi();
@@ -85,6 +87,12 @@ public sealed partial class ReceiverForm : Form
 
     private void BuildUi()
     {
+        var scrollHost = new ModernScrollHost
+        {
+            Dock = DockStyle.Fill,
+            BackColor = ModernScrollPalette.Background,
+        };
+
         string defaultFolder = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
             "LanReceivedFiles");
@@ -97,6 +105,7 @@ public sealed partial class ReceiverForm : Form
             RowCount = 7,
             ColumnCount = 1,
             Padding = new Padding(12),
+            BackColor = ModernScrollPalette.Background,
         };
 
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
@@ -228,7 +237,8 @@ public sealed partial class ReceiverForm : Form
         logGroup.Controls.Add(_logList);
         root.Controls.Add(logGroup, 0, 6);
 
-        Controls.Add(root);
+        scrollHost.SetContent(root, new Size(1020, 760));
+        Controls.Add(scrollHost);
     }
 
     private async Task ConnectAsync()

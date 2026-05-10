@@ -7,6 +7,7 @@ using LanSender.Contracts;
 using LanSender.Protocol;
 using LanSender.ScreenStreaming;
 using LanSender.Transfers;
+using LanShared.Ui;
 
 namespace LanSender;
 
@@ -64,6 +65,7 @@ public sealed partial class SenderForm : Form
         Text = "LAN Sender - Screen Video Refactor";
         Width = 1180;
         Height = 830;
+        MinimumSize = new Size(720, 520);
         StartPosition = FormStartPosition.CenterScreen;
 
         BuildUi();
@@ -95,12 +97,19 @@ public sealed partial class SenderForm : Form
 
     private void BuildUi()
     {
+        var scrollHost = new ModernScrollHost
+        {
+            Dock = DockStyle.Fill,
+            BackColor = ModernScrollPalette.Background,
+        };
+
         var root = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             RowCount = 6,
             ColumnCount = 2,
             Padding = new Padding(12),
+            BackColor = ModernScrollPalette.Background,
         };
 
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 34));
@@ -300,7 +309,8 @@ public sealed partial class SenderForm : Form
         logGroup.Controls.Add(_logList);
         root.Controls.Add(logGroup, 1, 5);
 
-        Controls.Add(root);
+        scrollHost.SetContent(root, new Size(1120, 780));
+        Controls.Add(scrollHost);
     }
 
     private void StartServer()
