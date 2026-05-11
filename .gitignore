@@ -11,6 +11,7 @@ _backup*
 *.bak*
 files/
 ffmpeg/
+scripts/
 
 # User-specific files
 *.rsuser
