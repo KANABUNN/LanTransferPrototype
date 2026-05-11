@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="LAN transfer application icon">
+  <defs>
+    <radialGradient id="g1" cx="30%" cy="15%" r="75%">
+      <stop offset="0" stop-color="#1D8CFF" stop-opacity=".50"/>
+      <stop offset="1" stop-color="#1D8CFF" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="g2" cx="80%" cy="85%" r="80%">
+      <stop offset="0" stop-color="#7A4DFF" stop-opacity=".45"/>
+      <stop offset="1" stop-color="#7A4DFF" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="g3" cx="15%" cy="90%" r="65%">
+      <stop offset="0" stop-color="#00D6C9" stop-opacity=".38"/>
+      <stop offset="1" stop-color="#00D6C9" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect x="80" y="80" width="864" height="864" rx="190" fill="#0B0F17"/>
+  <rect x="80" y="80" width="864" height="864" rx="190" fill="url(#g1)"/>
+  <rect x="80" y="80" width="864" height="864" rx="190" fill="url(#g2)"/>
+  <rect x="80" y="80" width="864" height="864" rx="190" fill="url(#g3)"/>
+  <rect x="85" y="85" width="854" height="854" rx="185" fill="none" stroke="#233149" stroke-width="10" opacity=".7"/>
+  <g opacity=".28" stroke="#20304A" stroke-width="3">
+    <path d="M236 196v642M338 196v642M440 196v642M542 196v642M644 196v642M746 196v642"/>
+    <path d="M196 236h632M196 338h632M196 440h632M196 542h632M196 644h632M196 746h632"/>
+  </g>
+  <rect x="226" y="268" width="572" height="380" rx="52" fill="#101827" stroke="#6BCBFF" stroke-width="18"/>
+  <rect x="270" y="314" width="484" height="272" rx="30" fill="#0C1220"/>
+  <rect x="302" y="346" width="420" height="206" rx="26" fill="none" stroke="#1D8CFF" stroke-width="8" opacity=".7"/>
+  <rect x="462" y="648" width="100" height="72" rx="20" fill="#6BCBFF" opacity=".92"/>
+  <rect x="374" y="708" width="276" height="52" rx="26" fill="#6BCBFF" opacity=".92"/>
+  <g stroke="#00D6C9" stroke-width="16" stroke-linecap="round">
+    <path d="M304 454h416M512 344v220"/>
+  </g>
+  <g fill="#00D6C9" stroke="#E8FFFF" stroke-width="8">
+    <circle cx="304" cy="454" r="30"/>
+    <circle cx="512" cy="454" r="30"/>
+    <circle cx="720" cy="454" r="30"/>
+    <circle cx="512" cy="344" r="30"/>
+    <circle cx="512" cy="564" r="30"/>
+  </g>
+  <path d="M404 810h206v-50l132 82-132 82v-50H404z" fill="#1D8CFF" opacity=".94"/>
+  <path d="M404 842h206" stroke="#DFF8FF" stroke-width="8" stroke-linecap="round" opacity=".72"/>
+  <g fill="#FFFFFF" opacity=".58">
+    <rect x="248" y="742" width="44" height="18" rx="8"/>
+    <rect x="300" y="792" width="62" height="18" rx="8" opacity=".76"/>
+    <rect x="714" y="236" width="54" height="18" rx="8" opacity=".84"/>
+    <rect x="654" y="198" width="36" height="14" rx="7" opacity=".68"/>
+  </g>
+</svg>
