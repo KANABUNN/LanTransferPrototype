@@ -53,6 +53,8 @@ public sealed partial class ReceiverForm : Form
     private string? _activeStreamId;
     private readonly object _screenDecodeLock = new();
     private byte[]? _pendingScreenFramePayload;
+    private long _pendingScreenFrameGeneration;
+    private long _screenFrameGeneration;
     private bool _screenDecodeWorkerRunning;
     private long _screenFramesDroppedBeforeDecode;
     private long _screenFramesDisplayed;
@@ -422,6 +424,7 @@ public sealed partial class ReceiverForm : Form
             }
 
             _activeStreamId = info.StreamId;
+            Interlocked.Increment(ref _screenFrameGeneration);
             UpdateScreenInfo($"Screen video start: {info.Fps}fps / {info.Quality}% / {info.Format}");
             AddLog($"Screen video start: stream={info.StreamId}");
         }
@@ -442,7 +445,9 @@ public sealed partial class ReceiverForm : Form
                 _screenFramesDroppedBeforeDecode++;
             }
 
+            long generation = Interlocked.Read(ref _screenFrameGeneration);
             _pendingScreenFramePayload = payload;
+            _pendingScreenFrameGeneration = generation;
 
             if (!_screenDecodeWorkerRunning)
             {
@@ -462,10 +467,12 @@ public sealed partial class ReceiverForm : Form
         while (!IsDisposed)
         {
             byte[]? payload;
+            long payloadGeneration;
 
             lock (_screenDecodeLock)
             {
                 payload = _pendingScreenFramePayload;
+                payloadGeneration = _pendingScreenFrameGeneration;
                 _pendingScreenFramePayload = null;
 
                 if (payload is null)
@@ -478,8 +485,15 @@ public sealed partial class ReceiverForm : Form
             try
             {
                 DecodedScreenFrame decoded = ScreenFrameDecoder.Decode(payload);
-                Interlocked.Increment(ref _screenFramesDisplayed);
-                UpdateScreenFrame(decoded.Image, decoded.Info, decoded.ByteSize);
+                if (payloadGeneration == Interlocked.Read(ref _screenFrameGeneration))
+                {
+                    Interlocked.Increment(ref _screenFramesDisplayed);
+                    UpdateScreenFrame(decoded.Image, decoded.Info, decoded.ByteSize);
+                }
+                else
+                {
+                    decoded.Image.Dispose();
+                }
             }
             catch (Exception ex)
             {
@@ -510,8 +524,40 @@ public sealed partial class ReceiverForm : Form
         }
 
         _activeStreamId = null;
-        UpdateScreenInfo($"Screen video stopped: {reason}");
+        ResetScreenMonitor($"Screen video stopped: {reason}");
         AddLog($"Screen video stopped: {reason}");
+    }
+
+    private void ResetScreenMonitor(string text)
+    {
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        if (InvokeRequired)
+        {
+            BeginInvoke(new Action(() => ResetScreenMonitor(text)));
+            return;
+        }
+
+        Interlocked.Increment(ref _screenFrameGeneration);
+        lock (_screenDecodeLock)
+        {
+            _pendingScreenFramePayload = null;
+            _pendingScreenFrameGeneration = Interlocked.Read(ref _screenFrameGeneration);
+        }
+
+        Image? old = _lastScreenImage;
+        _lastScreenImage = null;
+        _screenPicture.Image = null;
+        if (_fullScreenPicture is not null)
+        {
+            _fullScreenPicture.Image = null;
+        }
+        CloseFullScreenMonitor();
+        old?.Dispose();
+        _screenInfoLabel.Text = text;
     }
 
     private void UpdateScreenFrame(Image frameImage, ScreenFrameInfo info, int byteSize)

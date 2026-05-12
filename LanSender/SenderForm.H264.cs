@@ -18,6 +18,7 @@ public sealed partial class SenderForm
     private CancellationTokenSource? _h264Cts;
     private FfmpegH264Streamer? _h264Streamer;
     private string? _activeH264StreamId;
+    private int _h264StopRequested;
     private H264SenderConfig _h264Config = H264SenderConfig.Load();
     private readonly List<object> _activeH264Targets = new();
 
@@ -128,6 +129,7 @@ public sealed partial class SenderForm
         _h264Config.Save();
 
         string streamId = Guid.NewGuid().ToString("N");
+        Interlocked.Exchange(ref _h264StopRequested, 0);
         _activeH264StreamId = streamId;
         _activeH264Targets.Clear();
         _activeH264Targets.AddRange(targets);
@@ -172,9 +174,19 @@ public sealed partial class SenderForm
                     settings,
                     async (chunk, ct) =>
                     {
+                        if (Volatile.Read(ref _h264StopRequested) != 0)
+                        {
+                            return;
+                        }
+
                         foreach (object target in _activeH264Targets.ToList())
                         {
-                            await SendPacketToClientAsync((dynamic)target, PacketType.ScreenH264Data, chunk, ct);
+                            if (Volatile.Read(ref _h264StopRequested) != 0)
+                            {
+                                break;
+                            }
+
+                            await SendPacketToClientAsync((dynamic)target, PacketType.ScreenH264Data, chunk, CancellationToken.None);
                         }
                     },
                     token);
@@ -188,7 +200,7 @@ public sealed partial class SenderForm
             }
             finally
             {
-                await StopH264StreamAsync("H.264 process ended.", notifyReceivers: true);
+                await StopH264StreamAsync("H.264 process ended.", notifyReceivers: true, expectedStreamId: streamId);
             }
         });
     }
@@ -208,8 +220,18 @@ public sealed partial class SenderForm
         }.Normalize();
     }
 
-    private async Task StopH264StreamAsync(string reason, bool notifyReceivers)
+    private async Task StopH264StreamAsync(string reason, bool notifyReceivers, string? expectedStreamId = null)
     {
+        if (expectedStreamId is not null && !string.Equals(_activeH264StreamId, expectedStreamId, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        if (Interlocked.Exchange(ref _h264StopRequested, 1) != 0)
+        {
+            return;
+        }
+
         List<object> targets = _activeH264Targets.Count > 0
             ? _activeH264Targets.ToList()
             : GetClientSnapshot().Cast<object>().ToList();
@@ -253,6 +275,7 @@ public sealed partial class SenderForm
 
     private void StopH264LocalOnly()
     {
+        Interlocked.Exchange(ref _h264StopRequested, 1);
         try { _h264Cts?.Cancel(); } catch { }
         try { _h264Streamer?.Stop(); } catch { }
         try { _h264Cts?.Dispose(); } catch { }
