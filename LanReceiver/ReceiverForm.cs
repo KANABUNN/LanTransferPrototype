@@ -342,6 +342,8 @@ public sealed partial class ReceiverForm : Form
         {
             CloseCurrentFileSession(deleteTempFile: true);
             ResetBatchState();
+            StopH264Player();
+            ResetScreenMonitor("Disconnected");
             DisconnectFromWorker();
         }
     }
@@ -507,8 +509,7 @@ public sealed partial class ReceiverForm : Form
         {
             _screenDecodeWorkerRunning = false;
         }
-    }
-    private void HandleScreenVideoStop(byte[] payload)
+    }    private void HandleScreenVideoStop(byte[] payload)
     {
         string reason = "stopped";
         try
@@ -559,7 +560,6 @@ public sealed partial class ReceiverForm : Form
         old?.Dispose();
         _screenInfoLabel.Text = text;
     }
-
     private void UpdateScreenFrame(Image frameImage, ScreenFrameInfo info, int byteSize)
     {
         if (IsDisposed)
@@ -796,6 +796,8 @@ public sealed partial class ReceiverForm : Form
     {
         _manualDisconnect = true;
         StopAutoReconnect();
+        StopH264Player();
+        ResetScreenMonitor("Disconnected");
         DisconnectSilent();
         SetConnectedUi(false, "Disconnected");
         AddLog("Disconnected by user.");

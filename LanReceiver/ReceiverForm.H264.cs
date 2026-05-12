@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Text.Json;
 using LanReceiver.ScreenStreaming;
 using LanShared.Contracts;
@@ -14,6 +14,7 @@ public sealed partial class ReceiverForm
     private readonly SemaphoreSlim _h264WriteLock = new(1, 1);
     private H264ReceiverConfig _h264ReceiverConfig = H264ReceiverConfig.Load();
     private int _h264StopInProgress;
+    private int _h264StreamActive;
 
     private void InitializeH264ReceiverFeature()
     {
@@ -24,6 +25,7 @@ public sealed partial class ReceiverForm
     private async Task HandleH264StreamStartAsync(byte[] payload)
     {
         Interlocked.Exchange(ref _h264StopInProgress, 1);
+        Interlocked.Exchange(ref _h264StreamActive, 0);
         StopH264Player();
 
         H264StreamInfo? info = JsonSerializer.Deserialize<H264StreamInfo>(payload);
@@ -62,8 +64,15 @@ public sealed partial class ReceiverForm
         {
             if (ReferenceEquals(_h264Player, player) && Volatile.Read(ref _h264StopInProgress) == 0)
             {
+                Stream? input = _h264PlayerInput;
+                Interlocked.Exchange(ref _h264StreamActive, 0);
+                Interlocked.Exchange(ref _h264StopInProgress, 1);
+                _h264PlayerInput = null;
+                _h264Player = null;
                 AddLog("ffplay exited.");
-                UpdateScreenInfo("H.264 player exited");
+                ResetScreenMonitor("H.264 player exited");
+                try { input?.Dispose(); } catch { }
+                try { player.Dispose(); } catch { }
             }
         };
 
@@ -77,6 +86,7 @@ public sealed partial class ReceiverForm
             }
 
             Interlocked.Exchange(ref _h264StopInProgress, 0);
+            Interlocked.Exchange(ref _h264StreamActive, 1);
         }
         catch (Exception ex)
         {
@@ -96,7 +106,7 @@ public sealed partial class ReceiverForm
 
     private async Task HandleH264StreamDataAsync(byte[] payload)
     {
-        if (Volatile.Read(ref _h264StopInProgress) != 0 || _h264PlayerInput is null || payload.Length == 0)
+        if (Volatile.Read(ref _h264StopInProgress) != 0 || Volatile.Read(ref _h264StreamActive) == 0 || _h264PlayerInput is null || payload.Length == 0)
         {
             return;
         }
@@ -104,6 +114,11 @@ public sealed partial class ReceiverForm
         await _h264WriteLock.WaitAsync();
         try
         {
+            if (Volatile.Read(ref _h264StopInProgress) != 0 || Volatile.Read(ref _h264StreamActive) == 0 || _h264PlayerInput is null)
+            {
+                return;
+            }
+
             await _h264PlayerInput.WriteAsync(payload.AsMemory(0, payload.Length));
             _h264Bytes += payload.Length;
 
@@ -120,6 +135,7 @@ public sealed partial class ReceiverForm
             {
                 AddLog("H.264 write failed: " + ex.Message);
                 StopH264Player();
+                ResetScreenMonitor("H.264 player stopped");
             }
         }
         finally
@@ -131,6 +147,7 @@ public sealed partial class ReceiverForm
     private void HandleH264StreamStop(byte[] payload)
     {
         Interlocked.Exchange(ref _h264StopInProgress, 1);
+        Interlocked.Exchange(ref _h264StreamActive, 0);
         StopH264Player();
         ResetScreenMonitor("H.264 stopped");
         AddLog("H.264 stopped");
@@ -139,6 +156,7 @@ public sealed partial class ReceiverForm
     private void StopH264Player()
     {
         Interlocked.Exchange(ref _h264StopInProgress, 1);
+        Interlocked.Exchange(ref _h264StreamActive, 0);
 
         Stream? input = _h264PlayerInput;
         Process? player = _h264Player;

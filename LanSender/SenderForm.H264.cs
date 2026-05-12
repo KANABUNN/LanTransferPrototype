@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using LanSender.ScreenStreaming;
 using LanShared.Contracts;
 using LanShared.Protocol;
@@ -20,6 +20,7 @@ public sealed partial class SenderForm
     private string? _activeH264StreamId;
     private int _h264StopRequested;
     private H264SenderConfig _h264Config = H264SenderConfig.Load();
+    private readonly object _h264TargetsLock = new();
     private readonly List<object> _activeH264Targets = new();
 
     private void InitializeH264Feature()
@@ -131,8 +132,11 @@ public sealed partial class SenderForm
         string streamId = Guid.NewGuid().ToString("N");
         Interlocked.Exchange(ref _h264StopRequested, 0);
         _activeH264StreamId = streamId;
-        _activeH264Targets.Clear();
-        _activeH264Targets.AddRange(targets);
+        lock (_h264TargetsLock)
+        {
+            _activeH264Targets.Clear();
+            _activeH264Targets.AddRange(targets);
+        }
 
         var info = new H264StreamInfo
         {
@@ -179,14 +183,38 @@ public sealed partial class SenderForm
                             return;
                         }
 
-                        foreach (object target in _activeH264Targets.ToList())
+                        foreach (object target in GetH264TargetSnapshot())
                         {
                             if (Volatile.Read(ref _h264StopRequested) != 0)
                             {
                                 break;
                             }
 
-                            await SendPacketToClientAsync((dynamic)target, PacketType.ScreenH264Data, chunk, CancellationToken.None);
+                            bool sent = false;
+                            try
+                            {
+                                sent = await SendPacketToClientAsync((dynamic)target, PacketType.ScreenH264Data, chunk, CancellationToken.None);
+                            }
+                            catch (ObjectDisposedException ex)
+                            {
+                                AddLog("H.264 target removed: " + DescribeH264Target(target) + " / " + ex.Message);
+                            }
+                            catch (InvalidOperationException ex)
+                            {
+                                AddLog("H.264 target removed: " + DescribeH264Target(target) + " / " + ex.Message);
+                            }
+
+                            if (!sent)
+                            {
+                                RemoveH264Target(target);
+                            }
+                        }
+
+                        if (GetH264TargetCount() == 0 && Volatile.Read(ref _h264StopRequested) == 0)
+                        {
+                            AddLog("H.264 stream stopping: no active targets.");
+                            try { _h264Cts?.Cancel(); } catch { }
+                            try { _h264Streamer?.Stop(); } catch { }
                         }
                     },
                     token);
@@ -232,12 +260,11 @@ public sealed partial class SenderForm
             return;
         }
 
-        List<object> targets = _activeH264Targets.Count > 0
-            ? _activeH264Targets.ToList()
-            : GetClientSnapshot().Cast<object>().ToList();
-
-        try { _h264Cts?.Cancel(); } catch { }
-        try { _h264Streamer?.Stop(); } catch { }
+        List<object> targets = GetH264TargetSnapshot();
+        if (targets.Count == 0)
+        {
+            targets = GetClientSnapshot().Cast<object>().ToList();
+        }
 
         if (notifyReceivers)
         {
@@ -247,6 +274,7 @@ public sealed partial class SenderForm
                 Transport = reason,
                 Mode = "production",
             };
+
             byte[] stopPayload = JsonSerializer.SerializeToUtf8Bytes(stopInfo);
             foreach (object target in targets)
             {
@@ -256,15 +284,19 @@ public sealed partial class SenderForm
                 }
                 catch
                 {
+                    RemoveH264Target(target);
                 }
             }
         }
+
+        try { _h264Cts?.Cancel(); } catch { }
+        try { _h264Streamer?.Stop(); } catch { }
 
         try { _h264Cts?.Dispose(); } catch { }
         _h264Cts = null;
         _h264Streamer = null;
         _activeH264StreamId = null;
-        _activeH264Targets.Clear();
+        ClearH264Targets();
         _isStreamingScreen = false;
 
         SetH264Buttons(streaming: false);
@@ -281,7 +313,51 @@ public sealed partial class SenderForm
         try { _h264Cts?.Dispose(); } catch { }
         _h264Cts = null;
         _h264Streamer = null;
-        _activeH264Targets.Clear();
+        ClearH264Targets();
+    }
+
+    private List<object> GetH264TargetSnapshot()
+    {
+        lock (_h264TargetsLock)
+        {
+            return _activeH264Targets.ToList();
+        }
+    }
+
+    private int GetH264TargetCount()
+    {
+        lock (_h264TargetsLock)
+        {
+            return _activeH264Targets.Count;
+        }
+    }
+
+    private void RemoveH264Target(object target)
+    {
+        lock (_h264TargetsLock)
+        {
+            _activeH264Targets.Remove(target);
+        }
+    }
+
+    private void ClearH264Targets()
+    {
+        lock (_h264TargetsLock)
+        {
+            _activeH264Targets.Clear();
+        }
+    }
+
+    private static string DescribeH264Target(object target)
+    {
+        try
+        {
+            return target.ToString() ?? "unknown";
+        }
+        catch
+        {
+            return "unknown";
+        }
     }
 
     private void SetH264Buttons(bool streaming)
