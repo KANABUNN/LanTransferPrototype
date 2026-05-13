@@ -5,6 +5,7 @@
 
 # Custom
 *.zip
+*.bat
 *.ps1
 *.diff
 _backup*
